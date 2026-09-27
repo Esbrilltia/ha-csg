@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import requests
@@ -68,6 +69,7 @@ from .csg_client import (
     WF_ATTR_CHARGE,
     WF_ATTR_DATE,
     WF_ATTR_KWH,
+    WF_ATTR_MONTH,
     WF_ATTR_LADDER,
     WF_ATTR_LADDER_REMAINING_KWH,
     WF_ATTR_LADDER_START_DATE,
@@ -80,6 +82,13 @@ from .csg_client import (
 _LOGGER = logging.getLogger(__name__)
 _BILLING_DELAY = 2
 _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
+_KEY_YESTERDAY_DATE = "_yesterday_usage_date"
+
+# Guangzhou residential single-household tariff.
+# This installation has no multi-person allowance or time-of-use tariff.
+_GZ_BASE_TARIFF = 0.58886875
+_GZ_TIER2_TARIFF = _GZ_BASE_TARIFF + 0.05
+_GZ_TIER3_TARIFF = _GZ_BASE_TARIFF + 0.30
 FETCH_EXCEPTIONS = (CSGAPIError, asyncio.TimeoutError, ValueError, requests.RequestException)
 
 
@@ -154,11 +163,19 @@ class EnergyLedger:
             ledger.setdefault("energy_started_on", day)
             realtime = ledger.setdefault("realtime", {})
             realtime[day] = value
-            if day in ledger.setdefault("billing", {}):
-                await self._store.async_save(self._data)
-                return float(ledger.get("energy_total", 0))
+
             reported_days = ledger.setdefault("reported_realtime", {})
             counted_days = ledger.setdefault("counted_realtime", {})
+
+            # A billing row only locks realtime updates after this day has
+            # already been accounted for. This allows recovery when Billing
+            # arrived before the first usable realtime reading.
+            if (
+                day in ledger.setdefault("billing", {})
+                and day in reported_days
+            ):
+                await self._store.async_save(self._data)
+                return float(ledger.get("energy_total", 0))
             reported = float(reported_days.get(day, 0))
             if value > reported:
                 ledger["energy_total"] = float(ledger.get("energy_total", 0)) + value - reported
@@ -171,6 +188,30 @@ class EnergyLedger:
                 ledger.setdefault("counted_at", {}).setdefault(
                     day, dt_util.utcnow().isoformat()
                 )
+            billing_row = ledger.setdefault("billing", {}).get(day)
+
+            if (
+                billing_row is not None
+                and WF_ATTR_KWH in billing_row
+                and day in counted_days
+            ):
+                pending = ledger.setdefault("pending_corrections", {})
+
+                previous, current = pending.get(
+                    day,
+                    ({}, dict(billing_row)),
+                )
+
+                previous = dict(previous)
+                current = dict(current)
+
+                # Billing may have arrived before the first usable realtime
+                # reading. Once realtime establishes what was actually counted,
+                # replace the missing correction baseline with that counted value.
+                previous[WF_ATTR_KWH] = float(counted_days[day])
+                current[WF_ATTR_KWH] = float(billing_row[WF_ATTR_KWH])
+
+                pending[day] = (previous, current)
             await self._store.async_save(self._data)
             return float(ledger.setdefault("energy_total", 0.0))
 
@@ -189,11 +230,27 @@ class EnergyLedger:
                 values = {key: float(item[key]) for key in (WF_ATTR_KWH, WF_ATTR_CHARGE) if key in item}
                 existing = billing.get(day)
                 previous = existing
+
                 if previous is None:
-                    realtime_usage = ledger.setdefault("realtime", {}).get(day)
+                    counted_usage = ledger.setdefault(
+                        "counted_realtime", {}
+                    ).get(day)
+                    reported_usage = reported_energy_days.get(day)
+                    realtime_usage = ledger.setdefault(
+                        "realtime", {}
+                    ).get(day)
+
+                    baseline_usage = (
+                        counted_usage
+                        if counted_usage is not None
+                        else reported_usage
+                        if reported_usage is not None
+                        else realtime_usage
+                    )
+
                     previous = (
-                        {WF_ATTR_KWH: float(realtime_usage)}
-                        if realtime_usage is not None
+                        {WF_ATTR_KWH: float(baseline_usage)}
+                        if baseline_usage is not None
                         else {}
                     )
                 merged = {**previous, **values}
@@ -265,6 +322,31 @@ class EnergyLedger:
         value = self._account(account).get("energy_total")
         return float(value) if value is not None else None
 
+    def energy_counted_at(
+        self,
+        account: str,
+        day: str,
+    ) -> dt.datetime | None:
+        """Return when a realtime day was first counted into the running total."""
+        value = (
+            self._account(account)
+            .get("counted_at", {})
+            .get(day)
+        )
+
+        if not value:
+            return None
+
+        try:
+            counted_at = dt.datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+
+        if counted_at.tzinfo is None:
+            counted_at = counted_at.replace(tzinfo=dt.timezone.utc)
+
+        return counted_at
+
     def energy_total_at(self, account: str, when: dt.datetime) -> float | None:
         """Estimate today's cumulative value from the latest complete day.
 
@@ -272,6 +354,7 @@ class EnergyLedger:
         latest total linearly during the following day while keeping the ledger
         itself authoritative for Recorder corrections.
         """
+
         total = self.energy_total(account)
         if total is None:
             return None
@@ -346,21 +429,37 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
         self._attributes_key = description.attributes_key
         self._value_present = False
         self._unsub_interpolation = None
+        self._unsub_yesterday_guard = None
         self._update_from_coordinator()
 
     async def async_added_to_hass(self) -> None:
-        """Refresh interpolated energy state between cloud polls."""
+        """Register local state refresh timers."""
         await super().async_added_to_hass()
+
         if self._description.suffix == SUFFIX_ENERGY_TOTAL:
             self._unsub_interpolation = async_track_time_interval(
-                self.hass, self._handle_interpolation_tick, timedelta(minutes=5)
+                self.hass,
+                self._handle_interpolation_tick,
+                timedelta(minutes=5),
+            )
+
+        if self._description.suffix == SUFFIX_YESTERDAY_KWH:
+            self._unsub_yesterday_guard = async_track_time_interval(
+                self.hass,
+                self._handle_yesterday_guard_tick,
+                timedelta(minutes=1),
             )
 
     async def async_will_remove_from_hass(self) -> None:
-        """Stop the interpolation timer when the entity is removed."""
+        """Stop local refresh timers when the entity is removed."""
         if self._unsub_interpolation:
             self._unsub_interpolation()
             self._unsub_interpolation = None
+
+        if self._unsub_yesterday_guard:
+            self._unsub_yesterday_guard()
+            self._unsub_yesterday_guard = None
+
         await super().async_will_remove_from_hass()
 
     @callback
@@ -369,6 +468,15 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
         if self._description.suffix == SUFFIX_ENERGY_TOTAL:
             self._update_from_coordinator()
             self.async_write_ha_state()
+
+    @callback
+    def _handle_yesterday_guard_tick(
+        self,
+        _now: dt.datetime,
+    ) -> None:
+        """Invalidate yesterday usage after the CSG calendar day changes."""
+        self._update_from_coordinator()
+        self.async_write_ha_state()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -391,16 +499,50 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
 
     def _update_from_coordinator(self) -> None:
         """Synchronize the cached state with the coordinator's latest data."""
-        value = (self.coordinator.data or {}).get(self._account, {}).get(self._description.suffix)
-        self._value_present = value is not None and value != STATE_UNAVAILABLE
+        coordinator_data = self.coordinator.data or {}
+        account_data = coordinator_data.get(self._account, {})
+
+        value = account_data.get(self._description.suffix)
+
+        if (
+            value is not None
+            and value != STATE_UNAVAILABLE
+            and self._description.suffix == SUFFIX_YESTERDAY_KWH
+        ):
+            value_day = account_data.get(_KEY_YESTERDAY_DATE)
+
+            expected_day = (
+                _csg_today() - dt.timedelta(days=1)
+            ).isoformat()
+
+            if value_day != expected_day:
+                value = STATE_UNAVAILABLE
+
+        if (
+            value is not None
+            and value != STATE_UNAVAILABLE
+            and self._description.suffix == SUFFIX_ENERGY_TOTAL
+        ):
+            ledger = getattr(self.coordinator, "ledger", None)
+
+            if ledger is not None:
+                value = ledger.energy_total_at(
+                    self._account,
+                    dt_util.utcnow(),
+                )
+
+        self._value_present = (
+            value is not None
+            and value != STATE_UNAVAILABLE
+        )
+
         if self._value_present:
-            if self._description.suffix == SUFFIX_ENERGY_TOTAL:
-                ledger = getattr(self.coordinator, "ledger", None)
-                if ledger is not None:
-                    value = ledger.energy_total_at(self._account, dt_util.utcnow())
             self._attr_native_value = value
             self._attr_extra_state_attributes = (
-                self.coordinator.data[self._account].get(self._attributes_key, {})
+                account_data.get(
+                    self._attributes_key,
+                    {},
+                )
                 if self._attributes_key
                 else {}
             )
@@ -464,84 +606,198 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
 
 
 class RealtimeCoordinator(CSGCoordinator):
-    """Fetch current-state and yesterday-use data without billing latency."""
+    """Fetch balance and latest published daily usage."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ledger: EnergyLedger) -> None:
-        super().__init__(hass, entry, ledger, f"CSG realtime {entry.data[CONF_USERNAME]}")
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        ledger: EnergyLedger,
+    ) -> None:
+        super().__init__(
+            hass,
+            entry,
+            ledger,
+            f"CSG realtime {entry.data[CONF_USERNAME]}",
+        )
 
     def _ledger_total(self, account: str) -> Any:
         """Return the ledger's running total, or unavailable without one."""
         total = self.ledger.energy_total(account)
         return total if total is not None else STATE_UNAVAILABLE
 
-    def _mark_yesterday_unavailable(self, account_data: dict[str, Any], account: str) -> None:
-        """Hide yesterday's usage while the energy meter keeps its total.
-
-        Shared by an unpublished reading and a failed request: the snapshot is
-        unknown either way, but only the request failure is reported.
-        """
+    def _mark_yesterday_unavailable(
+        self,
+        account_data: dict[str, Any],
+        account: str,
+    ) -> None:
+        """Hide yesterday's usage while preserving the running energy total."""
         account_data[SUFFIX_YESTERDAY_KWH] = STATE_UNAVAILABLE
+        account_data[_KEY_YESTERDAY_DATE] = None
         account_data[SUFFIX_ENERGY_TOTAL] = self._ledger_total(account)
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         client = await self._client()
         data: dict[str, dict[str, Any]] = {}
-        yesterday = (_csg_today() - dt.timedelta(days=1)).isoformat()
+
+        today = _csg_today()
+        yesterday = (today - dt.timedelta(days=1)).isoformat()
+        previous_month = today.replace(day=1) - dt.timedelta(days=1)
+
+        months = [
+            (today.year, today.month),
+            (previous_month.year, previous_month.month),
+        ]
+
         for account in self._accounts():
             account_data: dict[str, Any] = {}
+
             try:
-                balance, arrears = await self._fetch(client.get_balance_and_arrears, account)
-                account_data.update({SUFFIX_BAL: balance, SUFFIX_ARR: arrears})
-                self._clear_failure(account.account_number, "balance")
+                balance, arrears = await self._fetch(
+                    client.get_balance_and_arrears,
+                    account,
+                )
+                account_data.update(
+                    {
+                        SUFFIX_BAL: balance,
+                        SUFFIX_ARR: arrears,
+                    }
+                )
+                self._clear_failure(
+                    account.account_number,
+                    "balance",
+                )
             except FETCH_EXCEPTIONS as err:
-                _LOGGER.warning("Could not update balance for %s: %s", account.account_number, err)
-                account_data.update({SUFFIX_BAL: STATE_UNAVAILABLE, SUFFIX_ARR: STATE_UNAVAILABLE})
-                self._notify_failure(account.account_number, "balance", err)
-            try:
-                usage = await self._fetch(client.get_yesterday_kwh, account)
-            except FETCH_EXCEPTIONS as err:
-                _LOGGER.warning("Could not update yesterday usage for %s: %s", account.account_number, err)
-                self._mark_yesterday_unavailable(account_data, account.account_number)
-                self._notify_failure(account.account_number, "usage", err)
-            else:
-                # An empty reading means the meter has not published yesterday's
-                # total yet. The request itself succeeded, so this is a gap in
-                # the data and not a failure: stay quiet and keep the ledger's
-                # running total instead of reporting the account as broken.
-                if usage is None:
-                    _LOGGER.debug("Yesterday usage for %s is not published yet", account.account_number)
-                    self._mark_yesterday_unavailable(account_data, account.account_number)
-                else:
-                    account_data[SUFFIX_YESTERDAY_KWH] = usage
-                    account_data[SUFFIX_ENERGY_TOTAL] = await self.ledger.async_record_realtime(
-                        account.account_number, yesterday, usage
+                _LOGGER.warning(
+                    "Could not update balance for %s: %s",
+                    account.account_number,
+                    err,
+                )
+                account_data.update(
+                    {
+                        SUFFIX_BAL: STATE_UNAVAILABLE,
+                        SUFFIX_ARR: STATE_UNAVAILABLE,
+                    }
+                )
+                self._notify_failure(
+                    account.account_number,
+                    "balance",
+                    err,
+                )
+
+            latest_usage: dict[str, Any] | None = None
+            yesterday_usage: float | None = None
+            usage_failed = False
+
+            for year, month in months:
+                try:
+                    _, usage_days = await self._fetch(
+                        client.get_month_daily_usage_detail,
+                        account,
+                        (year, month),
                     )
-                self._clear_failure(account.account_number, "usage")
+                except FETCH_EXCEPTIONS as err:
+                    _LOGGER.warning(
+                        "Could not update daily usage for %s/%s-%02d: %s",
+                        account.account_number,
+                        year,
+                        month,
+                        err,
+                    )
+                    usage_failed = True
+                    self._notify_failure(
+                        account.account_number,
+                        "usage",
+                        err,
+                    )
+                    continue
+
+                valid_days = [
+                    item
+                    for item in usage_days
+                    if item.get(WF_ATTR_DATE) is not None
+                    and item.get(WF_ATTR_KWH) is not None
+                ]
+
+                if not valid_days:
+                    continue
+
+                latest_usage = max(
+                    valid_days,
+                    key=lambda item: str(item[WF_ATTR_DATE]),
+                )
+
+                for item in valid_days:
+                    if str(item[WF_ATTR_DATE]) == yesterday:
+                        yesterday_usage = float(item[WF_ATTR_KWH])
+                        break
+
+                # Months are checked newest first. Once one contains published
+                # daily data, an older month cannot contain a newer reading.
+                break
+
+            if latest_usage is None:
+                # Requests may have succeeded even though the latest daily
+                # reading has not been published yet.
+                self._mark_yesterday_unavailable(
+                    account_data,
+                    account.account_number,
+                )
+            else:
+                latest_day = str(latest_usage[WF_ATTR_DATE])
+                latest_kwh = float(latest_usage[WF_ATTR_KWH])
+
+                account_data[SUFFIX_ENERGY_TOTAL] = (
+                    await self.ledger.async_record_realtime(
+                        account.account_number,
+                        latest_day,
+                        latest_kwh,
+                    )
+                )
+
+                if yesterday_usage is not None:
+                    account_data[SUFFIX_YESTERDAY_KWH] = yesterday_usage
+                    account_data[_KEY_YESTERDAY_DATE] = yesterday
+                else:
+                    account_data[SUFFIX_YESTERDAY_KWH] = STATE_UNAVAILABLE
+                    account_data[_KEY_YESTERDAY_DATE] = None
+
+            if not usage_failed:
+                self._clear_failure(
+                    account.account_number,
+                    "usage",
+                )
+
             data[account.account_number] = account_data
+
         return data
 
 
 class CurrentCoordinator(CSGCoordinator):
-    """Fetch current ladder state separately from delayed bill data."""
+    """Calculate current Guangzhou residential ladder from current-month usage."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ledger: EnergyLedger) -> None:
-        super().__init__(hass, entry, ledger, f"CSG current {entry.data[CONF_USERNAME]}")
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        ledger: EnergyLedger,
+    ) -> None:
+        super().__init__(
+            hass,
+            entry,
+            ledger,
+            f"CSG current {entry.data[CONF_USERNAME]}",
+        )
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         client = await self._client()
         today = _csg_today()
         data: dict[str, dict[str, Any]] = {}
+
         for account in self._accounts():
-            try:
-                _, _, ladder, _ = await self._fetch(
-                    client.get_month_daily_cost_detail,
-                    account,
-                    (today.year, today.month),
-                )
-                data[account.account_number] = _ladder_data(ladder)
-                self._clear_failure(account.account_number, "ladder")
-            except FETCH_EXCEPTIONS as err:
-                _LOGGER.warning("Could not update ladder for %s: %s", account.account_number, err)
+            # This local calculation is intentionally limited to the
+            # Guangzhou account/rules verified for this installation.
+            if account.area_code != "080000":
                 data[account.account_number] = {
                     suffix: STATE_UNAVAILABLE
                     for suffix in (
@@ -550,7 +806,47 @@ class CurrentCoordinator(CSGCoordinator):
                         SUFFIX_CURRENT_LADDER_TARIFF,
                     )
                 }
-                self._notify_failure(account.account_number, "ladder", err)
+                continue
+
+            try:
+                usage_total, usage_days = await self._fetch(
+                    client.get_month_daily_usage_detail,
+                    account,
+                    (today.year, today.month),
+                )
+
+                ladder = _guangzhou_residential_ladder(
+                    today,
+                    usage_total,
+                    usage_days,
+                )
+
+                data[account.account_number] = _ladder_data(ladder)
+
+                self._clear_failure(account.account_number, "ladder")
+
+            except FETCH_EXCEPTIONS as err:
+                _LOGGER.warning(
+                    "Could not calculate ladder for %s: %s",
+                    account.account_number,
+                    err,
+                )
+
+                data[account.account_number] = {
+                    suffix: STATE_UNAVAILABLE
+                    for suffix in (
+                        SUFFIX_CURRENT_LADDER,
+                        SUFFIX_CURRENT_LADDER_REMAINING_KWH,
+                        SUFFIX_CURRENT_LADDER_TARIFF,
+                    )
+                }
+
+                self._notify_failure(
+                    account.account_number,
+                    "ladder",
+                    err,
+                )
+
         return data
 
 
@@ -601,77 +897,302 @@ class BillingCoordinator(CSGCoordinator):
             data[account.account_number] = account_data
         return data
 
-    async def _update_account(self, client: CSGClient, account: CSGElectricityAccount, months: list[tuple[int, int]]) -> dict[str, Any]:
+    async def _update_account(
+        self,
+        client: CSGClient,
+        account: CSGElectricityAccount,
+        months: list[tuple[int, int]],
+    ) -> dict[str, Any]:
         data: dict[str, Any] = {}
         daily: list[dict[str, float | str]] = []
         current_month = None
         last_month = None
-        billing_failed = False
+        usage_failed = False
+
         for year, month in months:
+            usage_total = None
+            usage_days: list[dict[str, Any]] = []
+            usage_ok = False
+
             try:
-                usage_total, usage_days = await self._fetch(client.get_month_daily_usage_detail, account, (year, month))
-                cost_total, _, ladder, cost_days = await self._fetch(client.get_month_daily_cost_detail, account, (year, month))
-                merged = _merge_daily_days(usage_days, cost_days)
+                usage_total, usage_days = await self._fetch(
+                    client.get_month_daily_usage_detail,
+                    account,
+                    (year, month),
+                )
+                usage_ok = True
+            except FETCH_EXCEPTIONS as err:
+                _LOGGER.warning(
+                    "Could not update usage for %s/%s-%02d: %s",
+                    account.account_number,
+                    year,
+                    month,
+                    err,
+                )
+                usage_failed = True
+                self._notify_failure(
+                    account.account_number,
+                    "billing",
+                    err,
+                )
+
+            if usage_ok:
+                merged = _merge_daily_days(
+                    usage_days,
+                    [],
+                )
                 daily.extend(merged)
-                values = (usage_total, cost_total, ladder, merged)
+
+                values = (
+                    usage_total,
+                    None,
+                    {},
+                    merged,
+                )
+
                 if (year, month) == months[0]:
                     current_month = values
                 else:
                     last_month = values
-            except FETCH_EXCEPTIONS as err:
-                _LOGGER.warning("Could not update billing for %s/%s-%02d: %s", account.account_number, year, month, err)
-                billing_failed = True
-                self._notify_failure(account.account_number, "billing", err)
-        if not billing_failed:
-            self._clear_failure(account.account_number, "billing")
+
+        if not usage_failed:
+            self._clear_failure(
+                account.account_number,
+                "billing",
+            )
+
         has_current_settlement_day = False
+
         if current_month:
             usage_total, cost_total, ladder, current_days = current_month
-            data.update({SUFFIX_THIS_MONTH_KWH: usage_total, SUFFIX_THIS_MONTH_COST: cost_total, ATTR_KEY_MONTH_BILLING_DELAY: {ATTR_KEY_MONTH_BILLING_DELAY: _BILLING_DELAY}})
+
+            data.update(
+                {
+                    SUFFIX_THIS_MONTH_KWH: (
+                        usage_total
+                        if usage_total is not None
+                        else STATE_UNAVAILABLE
+                    ),
+                    SUFFIX_THIS_MONTH_COST: (
+                        cost_total
+                        if cost_total is not None
+                        else STATE_UNAVAILABLE
+                    ),
+                    ATTR_KEY_MONTH_BILLING_DELAY: {
+                        ATTR_KEY_MONTH_BILLING_DELAY: _BILLING_DELAY
+                    },
+                }
+            )
+
             _set_latest_day(data, current_days)
             has_current_settlement_day = bool(current_days)
+
         else:
-            data.update({suffix: STATE_UNAVAILABLE for suffix in (SUFFIX_THIS_MONTH_KWH, SUFFIX_THIS_MONTH_COST, SUFFIX_LATEST_DAY_KWH, SUFFIX_LATEST_DAY_COST)})
+            data.update(
+                {
+                    suffix: STATE_UNAVAILABLE
+                    for suffix in (
+                        SUFFIX_THIS_MONTH_KWH,
+                        SUFFIX_THIS_MONTH_COST,
+                        SUFFIX_LATEST_DAY_KWH,
+                        SUFFIX_LATEST_DAY_COST,
+                    )
+                }
+            )
+
         if last_month:
-            data[SUFFIX_LAST_MONTH_KWH], data[SUFFIX_LAST_MONTH_COST] = last_month[:2]
+            last_usage, last_cost = last_month[:2]
+
+            data[SUFFIX_LAST_MONTH_KWH] = (
+                last_usage
+                if last_usage is not None
+                else STATE_UNAVAILABLE
+            )
+            data[SUFFIX_LAST_MONTH_COST] = (
+                last_cost
+                if last_cost is not None
+                else STATE_UNAVAILABLE
+            )
+
             if not has_current_settlement_day:
                 _set_latest_day(data, last_month[3])
+
         else:
-            data.update({SUFFIX_LAST_MONTH_KWH: STATE_UNAVAILABLE, SUFFIX_LAST_MONTH_COST: STATE_UNAVAILABLE})
+            data.update(
+                {
+                    SUFFIX_LAST_MONTH_KWH: STATE_UNAVAILABLE,
+                    SUFFIX_LAST_MONTH_COST: STATE_UNAVAILABLE,
+                }
+            )
+
+        # The ledger can safely accept usage-only daily rows.
+        # Do not expose a fake ¥0 settled-cost total if no charge data exists.
         total_cost, changed_days = await self.ledger.async_record_billing(
-            account.account_number, daily
+            account.account_number,
+            daily,
         )
-        if daily:
+
+        has_cost_data = any(WF_ATTR_CHARGE in item for item in daily)
+
+        if has_cost_data:
             data[SUFFIX_SETTLED_COST_TOTAL] = total_cost
         else:
             data[SUFFIX_SETTLED_COST_TOTAL] = STATE_UNAVAILABLE
-        # Corrections are independent of whether this refresh returned rows.
+
+        # Corrections are independent of whether this refresh returned charge rows.
         acknowledgements = await self._async_correct_statistics(
-            account.account_number, changed_days
+            account.account_number,
+            changed_days,
         )
+
         if acknowledgements:
             await self.ledger.async_acknowledge_corrections(
-                account.account_number, acknowledgements
+                account.account_number,
+                acknowledgements,
             )
+
         await self._add_year_data(client, account, data)
         return data
 
-    async def _add_year_data(self, client: CSGClient, account: CSGElectricityAccount, data: dict[str, Any]) -> None:
+    async def _add_year_data(
+        self,
+        client: CSGClient,
+        account: CSGElectricityAccount,
+        data: dict[str, Any],
+    ) -> None:
         now = _csg_today()
-        for year, usage_suffix, cost_suffix in ((now.year, SUFFIX_THIS_YEAR_KWH, SUFFIX_THIS_YEAR_COST), (now.year - 1, SUFFIX_LAST_YEAR_KWH, SUFFIX_LAST_YEAR_COST)):
+        previous_month = now.replace(day=1) - dt.timedelta(days=1)
+        previous_month_key = f"{previous_month.year}{previous_month.month:02d}"
+
+        for year, usage_suffix, cost_suffix in (
+            (
+                now.year,
+                SUFFIX_THIS_YEAR_KWH,
+                SUFFIX_THIS_YEAR_COST,
+            ),
+            (
+                now.year - 1,
+                SUFFIX_LAST_YEAR_KWH,
+                SUFFIX_LAST_YEAR_COST,
+            ),
+        ):
             try:
-                cost, usage, _ = await self._fetch(client.get_year_month_stats, account, year)
+                cost, usage, by_month = await self._fetch(
+                    client.get_year_month_stats,
+                    account,
+                    year,
+                )
+
                 data[usage_suffix] = usage
                 data[cost_suffix] = cost
+
+                for month_data in by_month:
+                    month_key = str(
+                        month_data.get(WF_ATTR_MONTH, "")
+                    ).replace("-", "")
+
+                    if month_key == previous_month_key:
+                        data[SUFFIX_LAST_MONTH_COST] = month_data.get(
+                            WF_ATTR_CHARGE,
+                            STATE_UNAVAILABLE,
+                        )
+                        break
+
                 if year == now.year:
-                    billing_through = now.replace(day=1) - dt.timedelta(days=1)
+                    billing_through = (
+                        now.replace(day=1) - dt.timedelta(days=1)
+                    )
                     data[ATTR_KEY_YEAR_BILLING_DELAY] = {
-                        ATTR_KEY_YEAR_BILLING_DELAY: billing_through.strftime("%Y-%m")
+                        ATTR_KEY_YEAR_BILLING_DELAY:
+                            billing_through.strftime("%Y-%m")
                     }
+
             except FETCH_EXCEPTIONS as err:
-                _LOGGER.warning("Could not update year billing for %s/%s: %s", account.account_number, year, err)
+                _LOGGER.warning(
+                    "Could not update year billing for %s/%s: %s",
+                    account.account_number,
+                    year,
+                    err,
+                )
                 data[usage_suffix] = STATE_UNAVAILABLE
                 data[cost_suffix] = STATE_UNAVAILABLE
+
+    async def _async_statistic_sum_at(
+        self,
+        statistic_id: str,
+        start: dt.datetime,
+        period: Literal["5minute", "hour"],
+    ) -> float | None:
+        """Return the Recorder sum at one fixed statistics interval."""
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+        except ImportError:
+            return None
+
+        recorder = get_instance(self.hass)
+
+        if period == "5minute":
+            probe_start = dt_util.as_utc(start)
+            probe_end = probe_start + dt.timedelta(minutes=5)
+        else:
+            probe_start = dt_util.as_utc(
+                start.replace(
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+            )
+            probe_end = probe_start + dt.timedelta(hours=1)
+
+        try:
+            result = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                probe_start,
+                probe_end,
+                {statistic_id},
+                period,
+                None,
+                {"sum"},
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Could not read Recorder statistic %s at %s",
+                statistic_id,
+                probe_start,
+            )
+            return None
+
+        rows = result.get(statistic_id, [])
+
+        if not rows:
+            return None
+
+        expected_start = probe_start.timestamp()
+
+        row = next(
+            (
+                item
+                for item in rows
+                if math.isclose(
+                    float(item.get("start", -1)),
+                    expected_start,
+                    rel_tol=0.0,
+                    abs_tol=0.5,
+                )
+            ),
+            None,
+        )
+
+        if row is None:
+            return None
+
+        value = row.get("sum")
+
+        return float(value) if value is not None else None
 
     async def _async_correct_statistics(
         self,
@@ -694,22 +1215,126 @@ class BillingCoordinator(CSGCoordinator):
         except ValueError as err:
             _LOGGER.warning("Skipped bill correction: %s", err)
             return {}
+            
+        recorder = get_instance(self.hass)
         acknowledgements: dict[str, set[str]] = {}
+
         for day, (previous, current) in changed_days.items():
-            start = dt_util.start_of_local_day(dt.date.fromisoformat(day))
+            fallback_start = dt.datetime.combine(
+                dt.date.fromisoformat(day),
+                dt.time.min,
+                tzinfo=_CSG_TIME_ZONE,
+            )
+
             for statistic_id, key, unit in statistics:
                 if key not in previous:
                     continue
-                adjustment = current.get(key, 0) - previous[key]
-                if adjustment:
-                    try:
-                        get_instance(self.hass).async_adjust_statistics(
-                            statistic_id, start, adjustment, unit
+
+                start = fallback_start
+
+                if key == WF_ATTR_KWH:
+                    counted_at = self.ledger.energy_counted_at(
+                        account,
+                        day,
+                    )
+
+                    if counted_at is not None:
+                        counted_at = counted_at.astimezone(
+                            _CSG_TIME_ZONE
                         )
-                    except Exception:  # Keep this statistic's correction pending.
-                        _LOGGER.exception("Could not correct bill statistic %s", statistic_id)
-                        continue
+
+                        # Recorder short-term statistics use five-minute
+                        # intervals. Start from the interval in which this
+                        # realtime contribution first entered the running total.
+                        minute = (
+                            counted_at.minute
+                            - counted_at.minute % 5
+                        )
+
+                        start = counted_at.replace(
+                            minute=minute,
+                            second=0,
+                            microsecond=0,
+                        )
+
+                adjustment = current.get(key, 0) - previous[key]
+
+                if not adjustment:
+                    acknowledgements.setdefault(day, set()).add(key)
+                    continue
+
+                probe_period: Literal["5minute", "hour"] = "5minute"
+
+                before_sum = await self._async_statistic_sum_at(
+                    statistic_id,
+                    start,
+                    probe_period,
+                )
+
+                if before_sum is None:
+                    probe_period = "hour"
+                    before_sum = await self._async_statistic_sum_at(
+                        statistic_id,
+                        start,
+                        probe_period,
+                    )
+
+                if before_sum is None:
+                    _LOGGER.warning(
+                        "Could not find a stable Recorder statistic for %s "
+                        "at or after correction start; keeping correction pending",
+                        statistic_id,
+                    )
+                    continue
+
+                try:
+                    recorder.async_adjust_statistics(
+                        statistic_id,
+                        start,
+                        adjustment,
+                        unit,
+                    )
+
+                    await recorder.async_block_till_done()
+
+                except Exception:
+                    # Keep this statistic's correction pending.
+                    _LOGGER.exception(
+                        "Could not correct bill statistic %s",
+                        statistic_id,
+                    )
+                    continue
+
+                after_sum = await self._async_statistic_sum_at(
+                    statistic_id,
+                    start,
+                    probe_period,
+                )
+
+                if after_sum is None:
+                    _LOGGER.warning(
+                        "Could not verify corrected Recorder statistic %s; "
+                        "keeping correction pending",
+                        statistic_id,
+                    )
+                    continue
+
+                if not math.isclose(
+                    after_sum - before_sum,
+                    adjustment,
+                    rel_tol=1e-9,
+                    abs_tol=1e-6,
+                ):
+                    _LOGGER.warning(
+                        "Recorder statistic %s did not reflect expected "
+                        "adjustment %.6f; keeping correction pending",
+                        statistic_id,
+                        adjustment,
+                    )
+                    continue
+
                 acknowledgements.setdefault(day, set()).add(key)
+
         return acknowledgements
 
     def _statistic_id(self, account: str, suffix: str) -> str:
@@ -761,6 +1386,68 @@ def _ramp_fraction(ledger: dict[str, Any], day: str, local: dt.datetime) -> floa
     return min(1.0, max(0.0, (local - start).total_seconds() / span))
 
 
+def _guangzhou_residential_ladder(
+    today: dt.date,
+    usage_total: float,
+    usage_days: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Calculate Guangzhou residential ladder for a normal single household."""
+    usage = float(usage_total)
+
+    if 5 <= today.month <= 10:
+        first_limit = 260.0
+        second_limit = 600.0
+    else:
+        first_limit = 200.0
+        second_limit = 400.0
+
+    if usage <= first_limit:
+        ladder = 1
+        tariff = _GZ_BASE_TARIFF
+        remaining: Any = round(max(0.0, first_limit - usage), 2)
+        threshold = 0.0
+    elif usage <= second_limit:
+        ladder = 2
+        tariff = _GZ_TIER2_TARIFF
+        remaining = round(max(0.0, second_limit - usage), 2)
+        threshold = first_limit
+    else:
+        ladder = 3
+        tariff = _GZ_TIER3_TARIFF
+        remaining = STATE_UNAVAILABLE
+        threshold = second_limit
+
+    # First tier begins on the first day of the month.
+    # For higher tiers, derive the first published day on which the threshold
+    # was exceeded from the daily usage data.
+    start_date: str | None = today.replace(day=1).isoformat()
+
+    if ladder > 1:
+        cumulative = 0.0
+        start_date = None
+
+        for item in sorted(
+            usage_days,
+            key=lambda item: str(item.get(WF_ATTR_DATE, "")),
+        ):
+            day = item.get(WF_ATTR_DATE)
+            day_usage = item.get(WF_ATTR_KWH)
+
+            if day is None or day_usage is None:
+                continue
+
+            cumulative += float(day_usage)
+
+            if cumulative > threshold:
+                start_date = str(day)
+                break
+
+    return {
+        WF_ATTR_LADDER: ladder,
+        WF_ATTR_LADDER_REMAINING_KWH: remaining,
+        WF_ATTR_LADDER_TARIFF: tariff,
+        WF_ATTR_LADDER_START_DATE: start_date,
+    }
 def _ladder_data(ladder: dict[str, Any]) -> dict[str, Any]:
     return {
         SUFFIX_CURRENT_LADDER: ladder.get(WF_ATTR_LADDER, STATE_UNAVAILABLE),
