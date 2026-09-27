@@ -2,15 +2,15 @@
   "domain": "csg",
   "name": "China Southern Power Grid Statistics",
   "codeowners": [
-    "@orangeboyChen"
+    "@Esbrilltia"
   ],
   "config_flow": true,
   "integration_type": "service",
   "dependencies": [],
-  "documentation": "https://github.com/orangeboyChen/ha-csg/",
+  "documentation": "https://github.com/Esbrilltia/ha-csg/",
   "homekit": {},
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/orangeboyChen/ha-csg/issues",
+  "issue_tracker": "https://github.com/Esbrilltia/ha-csg/issues",
   "requirements": [
     "pycryptodome",
     "brotli"
