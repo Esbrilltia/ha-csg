@@ -9,6 +9,22 @@ __pycache__/
 .venv/
 .uv/
 
+# Credentials and local secrets
+.env
+.env.*
+!.env.example
+secrets.yaml
+session.json
+
 # Home Assistant runtime data
 .storage/
 home-assistant_v2.db*
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# Local CSG debug and probe output
+csg_history_probe_result*.json
