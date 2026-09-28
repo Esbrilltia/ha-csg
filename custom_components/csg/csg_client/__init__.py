@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import random
 import time
 from base64 import b64decode, b64encode
@@ -688,8 +689,16 @@ class CSGClient:
         month_total_kwh = float(resp_data["totalPower"])
         by_day = []
         for d_data in resp_data["result"]:
+            # An unpublished or invalid daily value is not a zero reading.
+            # Filter at the shared boundary used by realtime, bills and ladder.
+            try:
+                daily_kwh = float(d_data.get("power"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(daily_kwh) or daily_kwh < 0:
+                continue
             by_day.append(
-                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: float(d_data["power"])}
+                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: daily_kwh}
             )
         return month_total_kwh, by_day
 
