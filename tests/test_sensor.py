@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+from copy import deepcopy
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,7 @@ from custom_components.csg.sensor import (
     CSGSensor,
     EnergyLedger,
     RealtimeCoordinator,
+    _KEY_YESTERDAY_DATE,
     _csg_today,
     _ladder_data,
     _merge_daily_days,
@@ -45,7 +47,10 @@ class MemoryStore:
         self.saved_data: dict | None = None
 
     async def async_save(self, data: dict) -> None:
-        self.saved_data = data
+        self.saved_data = deepcopy(data)
+
+    async def async_load(self) -> dict | None:
+        return deepcopy(self.saved_data)
 
 
 def make_ledger() -> EnergyLedger:
@@ -60,6 +65,15 @@ def make_ledger() -> EnergyLedger:
 def run(coroutine):
     """Run an async unit under pytest without pytest-asyncio."""
     return asyncio.run(coroutine)
+
+
+@pytest.fixture(autouse=True)
+def stable_default_clock(monkeypatch):
+    """Keep ramp fixtures independent of the calendar day CI happens to run."""
+    monkeypatch.setattr(
+        "custom_components.csg.sensor.dt_util.utcnow",
+        lambda: dt.datetime(2026, 8, 1, tzinfo=dt.UTC),
+    )
 
 
 def test_energy_sensor_descriptions_have_correct_statistics_semantics() -> None:
@@ -124,8 +138,8 @@ def test_energy_total_does_not_interpolate_billing_only_day() -> None:
             "account", [{"date": "2026-08-01", "kwh": 24, "charge": 5}]
         )
     )
-    run(ledger.async_record_realtime("account", "2026-08-01", 24))
-
+    # This is strictly billing-only. Billing followed by realtime on an
+    # existing ledger is the separate A3 strict-xfail regression.
     assert ledger.energy_total_at(
         "account", dt.datetime(2026, 8, 2, 12, tzinfo=ZoneInfo("Asia/Shanghai"))
     ) == 10
@@ -478,10 +492,14 @@ class FakeLedger:
 
     def __init__(self) -> None:
         self.days: list[dict] = []
+        self.acknowledgements: dict = {}
 
     async def async_record_billing(self, account: str, days: list[dict]):
         self.days = days
-        return 5.0, {}
+        return 0.0, {}
+
+    async def async_acknowledge_corrections(self, account, acknowledgements):
+        self.acknowledgements = acknowledgements
 
 
 class FakeBillingCoordinator:
@@ -492,9 +510,11 @@ class FakeBillingCoordinator:
     def __init__(self) -> None:
         self.ledger = FakeLedger()
         self.corrected: dict | None = None
+        self.verified: dict = {}
 
-    async def _async_correct_statistics(self, account: str, changed: dict) -> None:
+    async def _async_correct_statistics(self, account: str, changed: dict) -> dict:
         self.corrected = changed
+        return self.verified
 
     async def _add_year_data(self, client, account, data: dict) -> None:
         return None
@@ -518,20 +538,12 @@ class FakeClient:
             return 0.0, []
         return 4.5, [{"date": "2026-07-31", "kwh": 4.5}]
 
-    def get_month_daily_cost_detail(self, account, year_month):
-        if year_month == (2026, 8):
-            return 0.0, 0.0, {}, []
-        return 2.0, 4.5, {}, [{"date": "2026-07-31", "kwh": 4.5, "charge": 2.0}]
-
 
 def test_billing_coordinator_falls_back_to_last_month_settlement(monkeypatch) -> None:
     """The latest settlement day uses last month when current month is empty."""
     coordinator = FakeBillingCoordinator()
     account = SimpleNamespace(account_number="account")
-    monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.now",
-        lambda: SimpleNamespace(date=lambda: __import__("datetime").date(2026, 8, 3)),
-    )
+    freeze_utcnow(monkeypatch, dt.datetime(2026, 8, 3, 4, tzinfo=dt.UTC))
 
     data = run(
         BillingCoordinator._update_account(
@@ -540,9 +552,10 @@ def test_billing_coordinator_falls_back_to_last_month_settlement(monkeypatch) ->
     )
 
     assert data[SUFFIX_LATEST_DAY_KWH] == 4.5
-    assert data[SUFFIX_LATEST_DAY_COST] == 2.0
+    assert data[SUFFIX_LATEST_DAY_COST] == STATE_UNAVAILABLE
     assert data[ATTR_KEY_SETTLEMENT_DATE] == {ATTR_KEY_SETTLEMENT_DATE: "2026-07-31"}
-    assert data[SUFFIX_SETTLED_COST_TOTAL] == 5.0
+    assert data[SUFFIX_SETTLED_COST_TOTAL] == STATE_UNAVAILABLE
+    assert coordinator.ledger.days == [{"date": "2026-07-31", "kwh": 4.5}]
     assert coordinator.corrected == {}
 
 
@@ -555,11 +568,9 @@ def test_billing_coordinator_applies_pending_corrections_with_daily_rows(monkeyp
 
     coordinator = FakeBillingCoordinator()
     coordinator.ledger = CorrectingLedger()
+    coordinator.verified = {"2026-07-31": {"kwh"}}
     account = SimpleNamespace(account_number="account")
-    monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.now",
-        lambda: SimpleNamespace(date=lambda: __import__("datetime").date(2026, 8, 3)),
-    )
+    freeze_utcnow(monkeypatch, dt.datetime(2026, 8, 3, 4, tzinfo=dt.UTC))
 
     run(
         BillingCoordinator._update_account(
@@ -570,6 +581,7 @@ def test_billing_coordinator_applies_pending_corrections_with_daily_rows(monkeyp
     assert coordinator.corrected == {
         "2026-07-31": ({"kwh": 1.0}, {"kwh": 2.0})
     }
+    assert coordinator.ledger.acknowledgements == coordinator.verified
 
 
 def test_billing_coordinator_marks_failed_month_unavailable(monkeypatch) -> None:
@@ -578,15 +590,9 @@ def test_billing_coordinator_marks_failed_month_unavailable(monkeypatch) -> None
         def get_month_daily_usage_detail(self, account, year_month):
             raise CSGAPIError("failure")
 
-        def get_month_daily_cost_detail(self, account, year_month):
-            raise CSGAPIError("failure")
-
     coordinator = FakeBillingCoordinator()
     account = SimpleNamespace(account_number="account")
-    monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.now",
-        lambda: SimpleNamespace(date=lambda: __import__("datetime").date(2026, 8, 3)),
-    )
+    freeze_utcnow(monkeypatch, dt.datetime(2026, 8, 3, 4, tzinfo=dt.UTC))
 
     data = run(
         BillingCoordinator._update_account(
@@ -600,29 +606,17 @@ def test_billing_coordinator_marks_failed_month_unavailable(monkeypatch) -> None
 
 
 def test_billing_correction_adjusts_existing_energy_and_cost_statistics(
-    monkeypatch,
+    recorder_harness,
 ) -> None:
     """Recorder adjustments use the registered entity IDs and daily delta."""
-    adjustments: list[tuple[str, dt.datetime, float, str]] = []
-
-    class FakeRecorder:
-        def async_adjust_statistics(self, statistic_id, start, adjustment, unit):
-            adjustments.append((statistic_id, start, adjustment, unit))
-
-    class FakeRegistry:
-        def async_get_entity_id(self, domain, platform, unique_id):
-            assert domain == "sensor"
-            assert platform == "csg"
-            return f"sensor.{unique_id.rsplit('.', 1)[-1]}"
-
+    start = dt.datetime(2026, 8, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
+    recorder_harness.add("sensor.energy_total", "5minute", start, 100)
+    recorder_harness.add("sensor.settled_cost_total", "5minute", start, 40)
     coordinator = BillingCoordinator.__new__(BillingCoordinator)
     coordinator.hass = object()
-    monkeypatch.setattr("custom_components.csg.sensor.er.async_get", lambda hass: FakeRegistry())
-    monkeypatch.setattr(
-        "homeassistant.components.recorder.get_instance", lambda hass: FakeRecorder()
-    )
+    coordinator.ledger = make_ledger()
 
-    run(
+    acknowledgements = run(
         BillingCoordinator._async_correct_statistics(
             coordinator,
             "account",
@@ -636,26 +630,34 @@ def test_billing_correction_adjusts_existing_energy_and_cost_statistics(
         )
     )
 
-    assert [(statistic_id, adjustment, unit) for statistic_id, _, adjustment, unit in adjustments] == [
+    assert [(statistic_id, adjustment, unit) for statistic_id, _, adjustment, unit in recorder_harness.adjustments] == [
         ("sensor.energy_total", 2.0, "kWh"),
         ("sensor.settled_cost_total", 1.5, "CNY"),
     ]
-    assert all(start.date() == dt.date(2026, 8, 1) for _, start, _, _ in adjustments)
+    assert all(point == start for _, point, _, _ in recorder_harness.adjustments)
+    assert recorder_harness.sums("sensor.energy_total", "5minute") == [102]
+    assert recorder_harness.sums("sensor.settled_cost_total", "5minute") == [41.5]
+    assert acknowledgements == {"2026-08-01": {"kwh", "charge"}}
 
 
 class FakeUsageClient:
-    """Serve yesterday's reading, or raise, without network I/O."""
+    """Serve dated monthly usage rows through the current API only."""
 
-    def __init__(self, usage: float | None | Exception) -> None:
+    def __init__(self, usage: float | None | Exception, day="2026-08-01") -> None:
         self.usage = usage
+        self.day = day
+        self.calls = []
 
     def get_balance_and_arrears(self, account):
         return 1.0, 0.0
 
-    def get_yesterday_kwh(self, account):
+    def get_month_daily_usage_detail(self, account, year_month):
+        self.calls.append(year_month)
         if isinstance(self.usage, Exception):
             raise self.usage
-        return self.usage
+        if self.usage is None or self.day[:7] != f"{year_month[0]}-{year_month[1]:02d}":
+            return 0.0, []
+        return self.usage, [{"date": self.day, "kwh": self.usage}]
 
 
 def make_realtime_coordinator(ledger: EnergyLedger, client: FakeUsageClient):
@@ -730,9 +732,7 @@ def test_realtime_coordinator_treats_missing_yesterday_usage_as_a_gap(monkeypatc
     assert data["account"][SUFFIX_ENERGY_TOTAL] == 20.0
     assert created == []
     assert warning_messages(caplog) == []
-    assert "not published yet" in "\n".join(
-        record.getMessage() for record in caplog.records
-    )
+    assert data["account"][_KEY_YESTERDAY_DATE] is None
     # A successful request clears any earlier usage failure.
     assert notification_ids("usage", dismissed) == ["csg_entry_usage_account"]
 
@@ -786,9 +786,10 @@ def test_realtime_coordinator_notifies_a_failed_yesterday_request(monkeypatch, c
 
     assert data["account"][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
     assert data["account"][SUFFIX_ENERGY_TOTAL] == 20.0
-    assert notification_ids("usage", created) == ["csg_entry_usage_account"]
+    assert notification_ids("usage", created) == ["csg_entry_usage_account"] * 2
     assert notification_ids("usage", dismissed) == []
-    assert any("Could not update yesterday usage" in message for message in warning_messages(caplog))
+    assert all("Could not update daily usage" in message for message in warning_messages(caplog))
+    assert len(warning_messages(caplog)) == 2
 
 
 def test_realtime_coordinator_records_a_published_yesterday_reading(monkeypatch, caplog) -> None:
@@ -829,24 +830,15 @@ def test_realtime_coordinator_leaves_energy_unavailable_when_a_failed_request_ha
 
     assert data["account"][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
     assert data["account"][SUFFIX_ENERGY_TOTAL] == STATE_UNAVAILABLE
-    assert notification_ids("usage", created) == ["csg_entry_usage_account"]
+    assert notification_ids("usage", created) == ["csg_entry_usage_account"] * 2
     assert notification_ids("usage", dismissed) == []
 
 
-class FakeRealtimeClient:
-    """Serve yesterday's reading, or raise, without network I/O."""
+class FakeRealtimeClient(FakeUsageClient):
+    """Monthly daily-usage fake with separate value/error constructor inputs."""
 
     def __init__(self, usage: float | None = None, error: Exception | None = None) -> None:
-        self.usage = usage
-        self.error = error
-
-    def get_balance_and_arrears(self, account):
-        return 1.0, 0.0
-
-    def get_yesterday_kwh(self, account):
-        if self.error is not None:
-            raise self.error
-        return self.usage
+        super().__init__(error if error is not None else usage, day="2026-08-02")
 
 
 class FakeRealtimeCoordinator(RealtimeCoordinator):
@@ -899,9 +891,7 @@ def test_empty_yesterday_usage_is_not_a_failed_request(monkeypatch, caplog) -> N
     assert data["account"][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
     assert data["account"][SUFFIX_ENERGY_TOTAL] == 12.0
     assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
-    assert "not published yet" in "\n".join(
-        record.getMessage() for record in caplog.records
-    )
+    assert coordinator.client.calls == [(2026, 8), (2026, 7)]
 
 
 def test_failed_yesterday_usage_request_still_notifies(monkeypatch) -> None:
@@ -912,7 +902,8 @@ def test_failed_yesterday_usage_request_still_notifies(monkeypatch) -> None:
 
     data = run(RealtimeCoordinator._async_update_data(coordinator))
 
-    assert coordinator.notifications == [("account", "usage", error)]
+    assert coordinator.notifications == [("account", "usage", error)] * 2
+    assert coordinator.client.calls == [(2026, 8), (2026, 7)]
     assert ("account", "usage") not in coordinator.dismissed
     assert data["account"][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
     assert data["account"][SUFFIX_ENERGY_TOTAL] == STATE_UNAVAILABLE
