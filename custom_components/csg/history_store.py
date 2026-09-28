@@ -10,10 +10,12 @@ import math
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
@@ -26,7 +28,7 @@ HISTORY_STORAGE_VERSION = 1
 DAILY_USAGE_SOURCE = "daily_usage_api"
 MONTHLY_BILL_SOURCE = "year_month_stats"
 _DAILY_VALUE_ABS_TOL = 1e-9
-_RECONCILIATION_ABS_TOL_KWH = 0.01
+_RECONCILIATION_ABS_TOL_KWH = Decimal("0.01")
 _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 
 
@@ -51,6 +53,14 @@ class CSGHistoryStore:
             HISTORY_STORAGE_VERSION,
             f"{HISTORY_STORAGE_KEY}.{entry_id}",
         )
+        # A separate public reader cannot return the writer's pending data.
+        self._verification_store = Store(
+            hass,
+            HISTORY_STORAGE_VERSION,
+            f"{HISTORY_STORAGE_KEY}.{entry_id}",
+            read_only=True,
+        )
+        self._persistence_pending = False
         self._data: dict[str, Any] = {"accounts": {}}
         self._lock = asyncio.Lock()
 
@@ -74,8 +84,7 @@ class CSGHistoryStore:
         year, month_number = _validate_month(month)
         month_key = _month_key(year, month_number)
 
-        candidates: dict[str, float] = {}
-        conflicts: set[str] = set()
+        candidate_sets: dict[str, set[float]] = {}
 
         for item in days:
             day_key = _validated_day_key(
@@ -88,26 +97,27 @@ class CSGHistoryStore:
             if value is None:
                 continue
 
-            if day_key in conflicts:
-                continue
+            candidate_sets.setdefault(day_key, set()).add(value)
 
-            if day_key not in candidates:
-                candidates[day_key] = value
-                continue
-
+        candidates: dict[str, float] = {}
+        for day_key, values in candidate_sets.items():
+            # Approximate equality is not transitive. The full range must fit
+            # the tolerance, independent of which candidate arrived first.
+            smallest = min(values)
             if not math.isclose(
-                candidates[day_key],
-                value,
+                smallest,
+                max(values),
                 rel_tol=0.0,
                 abs_tol=_DAILY_VALUE_ABS_TOL,
             ):
-                conflicts.add(day_key)
-                candidates.pop(day_key, None)
                 _LOGGER.warning(
                     "Conflicting daily usage values for %s on %s; skipped date",
                     account,
                     day_key,
                 )
+                continue
+            # Choose an actual source value, not an average or first arrival.
+            candidates[day_key] = smallest
 
         async with self._lock:
             account_data = self._account(account)
@@ -158,7 +168,8 @@ class CSGHistoryStore:
             account_data["daily_coverage"][month_key] = coverage
 
             if inserted or updated or coverage_changed:
-                await self._store.async_save(self._data)
+                self._persistence_pending = True
+            await self._async_save_pending()
 
             changed_dates = inserted + updated
             return DailyUsageUpsertResult(
@@ -198,6 +209,7 @@ class CSGHistoryStore:
                 merged["cost_cny"] = cost
 
             if not merged:
+                await self._async_save_pending()
                 return False
 
             fact_changed = (
@@ -206,12 +218,14 @@ class CSGHistoryStore:
                 or merged.get("cost_cny") != existing.get("cost_cny")
             )
             if not fact_changed:
+                await self._async_save_pending()
                 return False
 
             merged["source"] = MONTHLY_BILL_SOURCE
             merged["updated_at"] = _utcnow_iso()
             bills[month_key] = merged
-            await self._store.async_save(self._data)
+            self._persistence_pending = True
+            await self._async_save_pending()
             return True
 
     async def async_reconcile_month(
@@ -259,14 +273,15 @@ class CSGHistoryStore:
                 usage_state = "not_comparable"
             else:
                 difference = daily_sum - billed_usage
+                # Compare decimal business values, not a float subtraction
+                # artifact at the inclusive 0.01 kWh boundary. Keep the stored
+                # difference as a float for compatibility.
+                decimal_difference = sum(
+                    (Decimal(str(value)) for value in daily_values), Decimal(0)
+                ) - Decimal(str(billed_usage))
                 usage_state = (
                     "matched"
-                    if math.isclose(
-                        difference,
-                        0.0,
-                        rel_tol=0.0,
-                        abs_tol=_RECONCILIATION_ABS_TOL_KWH,
-                    )
+                    if abs(decimal_difference) <= _RECONCILIATION_ABS_TOL_KWH
                     else "mismatch"
                 )
 
@@ -280,8 +295,31 @@ class CSGHistoryStore:
             account_data["monthly_reconciliation"][
                 month_key
             ] = reconciliation
-            await self._store.async_save(self._data)
+            self._persistence_pending = True
+            await self._async_save_pending()
             return deepcopy(reconciliation)
+
+    async def _async_save_pending(self) -> None:
+        """Verify writes using public Store APIs; caller holds the fact lock.
+
+        HA 2024.12.5 logs and swallows WriteError. A normal save return is not
+        confirmation. Its write path invalidates the shared read cache before
+        writing, so the independent reader checks the persisted payload. Dirty
+        facts remain in memory for a later upsert to retry without a fabricated
+        revision. Confirmed no-op refetches incur no disk reads or writes.
+        """
+        if not self._persistence_pending:
+            return
+        await self._store.async_save(self._data)
+        try:
+            persisted = await self._verification_store.async_load()
+        except (HomeAssistantError, OSError):
+            _LOGGER.exception("Could not verify history persistence; keeping save pending")
+            return
+        if persisted == self._data:
+            self._persistence_pending = False
+        else:
+            _LOGGER.warning("History persistence not confirmed; keeping save pending")
 
     def daily_usage(
         self, account: str, day: str
