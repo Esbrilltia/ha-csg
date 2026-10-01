@@ -80,6 +80,7 @@ from .csg_client import (
 )
 
 from .history_store import CSGHistoryStore
+from .energy_statistics import EnergyStatisticsBridge
 from .history_helpers import (
     collect_monthly_bill_candidates as _collect_monthly_bill_candidates,
 )
@@ -395,9 +396,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ledger = EnergyLedger(hass, entry.entry_id)
     await ledger.async_load()
     history_store = hass.data[DOMAIN][entry.entry_id]["history_store"]
-    realtime = RealtimeCoordinator(hass, entry, ledger, history_store)
+    bridge = hass.data[DOMAIN][entry.entry_id].get("energy_statistics_bridge")
+    realtime = RealtimeCoordinator(hass, entry, ledger, history_store, bridge)
     current = CurrentCoordinator(hass, entry, ledger)
-    billing = BillingCoordinator(hass, entry, ledger, history_store)
+    billing = BillingCoordinator(hass, entry, ledger, history_store, bridge)
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
         "billing_coordinator"
     ] = billing
@@ -621,6 +623,7 @@ class RealtimeCoordinator(CSGCoordinator):
         entry: ConfigEntry,
         ledger: EnergyLedger,
         history_store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -629,6 +632,7 @@ class RealtimeCoordinator(CSGCoordinator):
             f"CSG realtime {entry.data[CONF_USERNAME]}",
         )
         self.history_store = history_store
+        self.energy_statistics_bridge = bridge
 
     def _ledger_total(self, account: str) -> Any:
         """Return the ledger's running total, or unavailable without one."""
@@ -726,6 +730,8 @@ class RealtimeCoordinator(CSGCoordinator):
                         account.account_number, (year, month), usage_days
                     )
                 )
+                if self.energy_statistics_bridge is not None:
+                    self.energy_statistics_bridge.request_sync()
 
                 valid_days = [
                     item
@@ -874,9 +880,11 @@ class BillingCoordinator(CSGCoordinator):
         entry: ConfigEntry,
         ledger: EnergyLedger,
         history_store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         super().__init__(hass, entry, ledger, f"CSG billing {entry.data[CONF_USERNAME]}")
         self.history_store = history_store
+        self.energy_statistics_bridge = bridge
         self.update_interval = None
         update_time = dt.time.fromisoformat(
             entry.data[CONF_SETTINGS].get(
@@ -964,6 +972,8 @@ class BillingCoordinator(CSGCoordinator):
                         account.account_number, (year, month), usage_days
                     )
                 )
+                if self.energy_statistics_bridge is not None:
+                    self.energy_statistics_bridge.request_sync()
                 merged = _merge_daily_days(
                     usage_days,
                     [],

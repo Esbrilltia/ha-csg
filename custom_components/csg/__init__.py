@@ -31,6 +31,7 @@ from .csg_client import (
 )
 from .history_coordinator import HistoryCoordinator
 from .history_store import CSGHistoryStore
+from .energy_statistics import EnergyStatisticsBridge
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
@@ -55,14 +56,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     history_store = CSGHistoryStore(hass, entry.entry_id)
     await history_store.async_load()
-    hass.data[DOMAIN][entry.entry_id] = {"history_store": history_store}
+    bridge = EnergyStatisticsBridge(hass, entry, history_store)
+    hass.data[DOMAIN][entry.entry_id] = {
+        "history_store": history_store, "energy_statistics_bridge": bridge,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     if entry.data.get(CONF_SETTINGS, {}).get(CONF_HISTORY_START_MONTH):
-        history = HistoryCoordinator(hass, entry, history_store)
+        history = HistoryCoordinator(hass, entry, history_store, bridge)
         hass.data[DOMAIN][entry.entry_id]["history_coordinator"] = history
         history.start()
+
+    bridge.request_sync()
 
     return True
 
@@ -71,6 +77,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry: {entry.title}")
     cleanup_errors: list[Exception] = []
+    bridge = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("energy_statistics_bridge")
+    if bridge is not None:
+        try:
+            await bridge.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("Energy statistics cleanup failed; continuing entry cleanup")
+            cleanup_errors.append(err)
     history = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("history_coordinator")
     if history is not None:
         try:

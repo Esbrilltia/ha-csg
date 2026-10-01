@@ -27,6 +27,7 @@ def daily_usage_history_dependency(request, monkeypatch):
         coordinator = original(kind, client, ledger)
         if kind in (RealtimeCoordinator, BillingCoordinator):
             coordinator.history_store = AsyncMock(spec=CSGHistoryStore)
+            coordinator.energy_statistics_bridge = None
         return coordinator
 
     monkeypatch.setattr(request.module, "make_coordinator", make_coordinator)

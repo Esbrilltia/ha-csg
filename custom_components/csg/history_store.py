@@ -330,6 +330,17 @@ class CSGHistoryStore:
             await self._async_save_pending()
             return not self._persistence_pending
 
+    async def async_daily_usage_snapshot(self, account: str) -> dict[str, dict[str, Any]]:
+        """Return detached daily facts under the lock without creating account data.
+
+        A write can begin after async_ensure_persisted releases its lock. Reject
+        an unconfirmed newer payload here so consumers never publish such facts.
+        """
+        async with self._lock:
+            if self._persistence_pending:
+                raise HomeAssistantError("Daily usage snapshot is not confirmed durable")
+            return deepcopy(self._data["accounts"].get(account, {}).get("daily_usage", {}))
+
     def history_progress(self, account: str) -> dict[str, Any]:
         """Return confirmed checkpoints only, detached from the mutable payload."""
         sync = self._account(account).get("sync")

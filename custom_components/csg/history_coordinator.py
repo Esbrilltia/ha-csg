@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
@@ -27,6 +27,9 @@ from .history_helpers import (
     parse_history_start_month,
 )
 from .history_store import CSGHistoryStore
+
+if TYPE_CHECKING:
+    from .energy_statistics import EnergyStatisticsBridge
 
 _LOGGER = logging.getLogger(__name__)
 _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
@@ -51,11 +54,13 @@ class HistoryCoordinator:
     """Collect historical facts without entities, timers, or ledger dependencies."""
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, store: CSGHistoryStore
+        self, hass: HomeAssistant, entry: ConfigEntry, store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.history_store = store
+        self.energy_statistics_bridge = bridge
         self._task: asyncio.Task[None] | None = None
         self._shutdown = False
 
@@ -123,6 +128,11 @@ class HistoryCoordinator:
             raise
 
     async def _async_sync(self) -> None:
+        await self._async_collect()
+        if not self._shutdown and self.energy_statistics_bridge is not None:
+            self.energy_statistics_bridge.request_sync()
+
+    async def _async_collect(self) -> None:
         start = self.entry.data.get(CONF_SETTINGS, {}).get(CONF_HISTORY_START_MONTH)
         if not start or self._shutdown:
             return
