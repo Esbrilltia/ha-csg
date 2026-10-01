@@ -16,7 +16,9 @@ from homeassistant.helpers.device_registry import DeviceEntry
 from .const import (
     CONF_AUTH_TOKEN,
     CONF_ELE_ACCOUNTS,
+    CONF_HISTORY_START_MONTH,
     CONF_LOGIN_TYPE,
+    CONF_SETTINGS,
     CONF_UPDATED_AT,
     DOMAIN,
 )
@@ -27,7 +29,9 @@ from .csg_client import (
     InvalidCredentials,
     NotLoggedIn,
 )
+from .history_coordinator import HistoryCoordinator
 from .history_store import CSGHistoryStore
+
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,18 +59,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    if entry.data.get(CONF_SETTINGS, {}).get(CONF_HISTORY_START_MONTH):
+        history = HistoryCoordinator(hass, entry, history_store)
+        hass.data[DOMAIN][entry.entry_id]["history_coordinator"] = history
+        history.start()
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry: {entry.title}")
+    cleanup_errors: list[Exception] = []
+    history = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("history_coordinator")
+    if history is not None:
+        try:
+            await history.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("History cleanup failed; continuing entry cleanup")
+            cleanup_errors.append(err)
     billing = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("billing_coordinator")
     if billing is not None:
-        await billing.async_shutdown()
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        try:
+            await billing.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("Billing cleanup failed; continuing platform cleanup")
+            cleanup_errors.append(err)
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception as err:
+        cleanup_errors.append(err)
+        unload_ok = False
+    finally:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     _LOGGER.debug(f"Unload platforms for entry: {entry.title}, success: {unload_ok}")
-    hass.data[DOMAIN].pop(entry.entry_id, None)
+    if cleanup_errors:
+        raise cleanup_errors[0]
     return unload_ok
 
 

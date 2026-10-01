@@ -52,8 +52,9 @@
     "step": {
       "init": {"title": "Choose an action", "menu_options": {"add_account": "Add a linked payment account", "settings": "Settings"}},
       "add_account": {"title": "Choose a payment account"},
-      "settings": {"title": "Settings", "data": {"update_interval": "Update interval (seconds)", "billing_update_time": "Daily billing update time"}}
+      "settings": {"title": "Settings", "data_description": {"history_start_month": "Earliest month you allow this integration to fetch historical facts. Leave empty to disable new historical backfill."}, "data": {"update_interval": "Update interval (seconds)", "billing_update_time": "Daily billing update time", "history_start_month": "Historical sync start month (YYYY-MM)"}}
     },
+    "error": {"invalid_history_start_month": "Enter a valid calendar month as YYYY-MM, or leave empty to disable historical backfill."},
     "abort": {"no_account": "No payment account is linked to this CSG account", "all_added": "All linked payment accounts are already configured"}
   }
 }

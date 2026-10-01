@@ -20,6 +20,8 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 from .csg_client import WF_ATTR_DATE, WF_ATTR_KWH
+from .history_helpers import parse_history_start_month
+from .history_io import HistoryStorageHass
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +62,11 @@ class CSGHistoryStore:
             f"{HISTORY_STORAGE_KEY}.{entry_id}",
             read_only=True,
         )
+        # Construct real Stores with real HA first, so the shared storage manager
+        # remains attached to HA. Only these two Stores receive the I/O delegate.
+        storage_hass = HistoryStorageHass(hass, f"{HISTORY_STORAGE_KEY}.{entry_id}")
+        self._store.hass = storage_hass
+        self._verification_store.hass = storage_hass
         self._persistence_pending = False
         self._data: dict[str, Any] = {"accounts": {}}
         self._lock = asyncio.Lock()
@@ -310,16 +317,127 @@ class CSGHistoryStore:
         """
         if not self._persistence_pending:
             return
-        await self._store.async_save(self._data)
+        if await self._async_save_verified(deepcopy(self._data)):
+            self._persistence_pending = False
+
+    async def async_ensure_persisted(self) -> bool:
+        """Flush facts and confirm with the independent Store reader.
+
+        Return False on unconfirmed readback; raised save errors also require a
+        retry. Neither outcome permits a historical checkpoint to advance.
+        """
+        async with self._lock:
+            await self._async_save_pending()
+            return not self._persistence_pending
+
+    def history_progress(self, account: str) -> dict[str, Any]:
+        """Return confirmed checkpoints only, detached from the mutable payload."""
+        sync = self._account(account).get("sync")
+        if not isinstance(sync, Mapping):
+            _LOGGER.warning("Invalid history sync metadata; treating units as incomplete")
+            return {}
+        return _normalize_history_progress(sync.get("history_backfill", {}))
+
+    async def async_complete_history_unit(
+        self,
+        account: str,
+        *,
+        daily_month: tuple[int, int] | None = None,
+        bill_year: int | None = None,
+        bill_months: Iterable[tuple[int, int]] = (),
+    ) -> bool:
+        """Commit a checkpoint only after facts are durable, then verify it.
+
+        Bill checkpoints retain the requested scope so extensions within the same
+        year remain discoverable. Failed or cancelled saves never install an
+        unconfirmed checkpoint in memory; a durable checkpoint always follows
+        durable facts, even if cancellation interrupts its acknowledgement.
+        """
+        if (daily_month is None) == (bill_year is None):
+            raise ValueError("Specify exactly one history lane")
+        daily_key = (
+            _month_key(*_validate_month(daily_month)) if daily_month is not None else None
+        )
+        scope = sorted({_month_key(*_validate_month(month)) for month in bill_months})
+        if bill_year is not None:
+            dt.date(bill_year, 1, 1)
+            if not scope or any(int(key[:4]) != bill_year for key in scope):
+                raise ValueError("Bill scope must belong to the requested year")
+
+        async with self._lock:
+            self._account(account)
+            await self._async_save_pending()
+            if self._persistence_pending:
+                return False
+            payload = deepcopy(self._data)
+            account_data = payload["accounts"][account]
+            if not isinstance(account_data.get("sync"), Mapping):
+                account_data["sync"] = {}
+            sync = account_data["sync"]
+            progress = _normalize_history_progress(sync.get("history_backfill", {}))
+            sync["history_backfill"] = progress
+            daily = set(progress.get("completed_daily_months", []))
+            years = set(progress.get("completed_bill_years", []))
+            scopes = progress.setdefault("bill_year_scopes", {})
+            if daily_key is not None:
+                daily.add(daily_key)
+            else:
+                years.add(bill_year)
+                key = str(bill_year)
+                scopes[key] = sorted(set(scopes.get(key, [])) | set(scope))
+            progress["completed_daily_months"] = sorted(daily)
+            progress["completed_bill_years"] = sorted(years)
+            progress["last_completed_at"] = _utcnow_iso()
+            sync["last_history_sync"] = progress["last_completed_at"]
+            if not await self._async_save_verified(payload):
+                return False
+            self._data = payload
+            return True
+
+    async def _async_save_verified(self, payload: dict[str, Any]) -> bool:
+        """Drain ordinary unload; hand global-stop ownership to the worker lane."""
+        task = asyncio.create_task(self._async_write_and_verify(payload))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if getattr(getattr(self._store, "hass", None), "is_stopping", False):
+                    # Core may stop waiting while a disk worker still runs. The
+                    # path's worker lane retains ordering until actual I/O ends;
+                    # cancel the coroutine promptly, without accepting a result
+                    # or installing a checkpoint after global cancellation.
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        _LOGGER.exception("History storage task failed during global stop")
+                    raise
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            # Retrieve any exception before propagating cancellation.
+            try:
+                task.result()
+            finally:
+                raise asyncio.CancelledError
+        return task.result()
+
+    async def _async_write_and_verify(self, payload: dict[str, Any]) -> bool:
+        """Save one snapshot and verify using public Store APIs."""
+        await self._store.async_save(payload)
         try:
             persisted = await self._verification_store.async_load()
         except (HomeAssistantError, OSError):
             _LOGGER.exception("Could not verify history persistence; keeping save pending")
-            return
-        if persisted == self._data:
-            self._persistence_pending = False
-        else:
-            _LOGGER.warning("History persistence not confirmed; keeping save pending")
+            return False
+        if persisted == payload:
+            return True
+        _LOGGER.warning("History persistence not confirmed; keeping save pending")
+        return False
 
     def daily_usage(
         self, account: str, day: str
@@ -476,3 +594,68 @@ def _utcnow_iso() -> str:
 
 def _csg_today() -> dt.date:
     return dt.datetime.now(dt.UTC).astimezone(_CSG_TIME_ZONE).date()
+
+
+def _normalize_history_progress(raw: Any) -> dict[str, Any]:
+    """Retain only independently valid completion members; facts are untouched."""
+    if not isinstance(raw, Mapping):
+        _LOGGER.warning("Invalid history backfill metadata; treating units as incomplete")
+        return {}
+    if not raw:
+        return {}
+    invalid = False
+
+    def months(value: Any, year: int | None = None) -> list[str]:
+        nonlocal invalid
+        if not isinstance(value, list):
+            invalid = True
+            return []
+        accepted = set()
+        for item in value:
+            try:
+                parsed_year, _ = parse_history_start_month(item)
+            except ValueError:
+                invalid = True
+                continue
+            if year is not None and parsed_year != year:
+                invalid = True
+                continue
+            accepted.add(item)
+        return sorted(accepted)
+
+    daily = months(raw.get("completed_daily_months", []))
+    raw_years = raw.get("completed_bill_years", [])
+    years = set()
+    if isinstance(raw_years, list):
+        for item in raw_years:
+            if type(item) is int and 1 <= item <= 9999:
+                years.add(item)
+            else:
+                invalid = True
+    else:
+        invalid = True
+    scopes = {}
+    raw_scopes = raw.get("bill_year_scopes", {})
+    if isinstance(raw_scopes, Mapping):
+        for key, value in raw_scopes.items():
+            if (
+                not isinstance(key, str) or not 1 <= len(key) <= 4
+                or not key.isascii() or not key.isdecimal()
+                or not 1 <= int(key) <= 9999 or str(int(key)) != key
+                or int(key) not in years
+            ):
+                invalid = True
+                continue
+            scopes[key] = months(value, int(key))
+    else:
+        invalid = True
+    progress = {
+        "completed_daily_months": daily,
+        "completed_bill_years": sorted(years),
+        "bill_year_scopes": scopes,
+    }
+    if isinstance(raw.get("last_completed_at"), str):
+        progress["last_completed_at"] = raw["last_completed_at"]
+    if invalid:
+        _LOGGER.warning("Invalid history completion metadata; invalid members remain retryable")
+    return progress

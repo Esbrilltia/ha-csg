@@ -13,6 +13,7 @@ import math
 import random
 import time
 from base64 import b64decode, b64encode
+from collections.abc import Mapping
 from copy import copy
 from hashlib import md5
 from typing import Any
@@ -691,14 +692,17 @@ class CSGClient:
         for d_data in resp_data["result"]:
             # An unpublished or invalid daily value is not a zero reading.
             # Filter at the shared boundary used by realtime, bills and ladder.
+            if not isinstance(d_data, Mapping) or isinstance(d_data.get("power"), bool):
+                continue
             try:
+                day = datetime.date.fromisoformat(d_data.get("date"))
                 daily_kwh = float(d_data.get("power"))
             except (TypeError, ValueError, OverflowError):
                 continue
             if not math.isfinite(daily_kwh) or daily_kwh < 0:
                 continue
             by_day.append(
-                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: daily_kwh}
+                {WF_ATTR_DATE: day.isoformat(), WF_ATTR_KWH: daily_kwh}
             )
         return month_total_kwh, by_day
 
@@ -794,13 +798,22 @@ class CSGClient:
         total_year_charge = resp_data["totalActualAmount"]
         by_month = []
         for m_data in resp_data["electricAndChargeList"]:
-            by_month.append(
-                {
-                    WF_ATTR_MONTH: m_data[JSON_KEY_YEAR_MONTH],
-                    WF_ATTR_CHARGE: float(m_data["actualTotalAmount"]),
-                    WF_ATTR_KWH: float(m_data["billingElectricity"]),
-                }
-            )
+            if not isinstance(m_data, Mapping) or JSON_KEY_YEAR_MONTH not in m_data:
+                continue
+            row = {WF_ATTR_MONTH: m_data[JSON_KEY_YEAR_MONTH]}
+            for raw_key, key in (
+                ("actualTotalAmount", WF_ATTR_CHARGE), ("billingElectricity", WF_ATTR_KWH)
+            ):
+                value = m_data.get(raw_key)
+                if value is None or isinstance(value, bool):
+                    continue
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(number) and number >= 0:
+                    row[key] = number
+            by_month.append(row)
         return float(total_year_charge), float(total_year_kwh), by_month
 
     def get_yesterday_kwh(self, account: CSGElectricityAccount) -> float:
