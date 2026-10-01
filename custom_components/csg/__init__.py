@@ -70,15 +70,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry: {entry.title}")
+    cleanup_errors: list[Exception] = []
     history = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("history_coordinator")
     if history is not None:
-        await history.async_shutdown()
+        try:
+            await history.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("History cleanup failed; continuing entry cleanup")
+            cleanup_errors.append(err)
     billing = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("billing_coordinator")
     if billing is not None:
-        await billing.async_shutdown()
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        try:
+            await billing.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("Billing cleanup failed; continuing platform cleanup")
+            cleanup_errors.append(err)
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception as err:
+        cleanup_errors.append(err)
+        unload_ok = False
+    finally:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
     _LOGGER.debug(f"Unload platforms for entry: {entry.title}, success: {unload_ok}")
-    hass.data[DOMAIN].pop(entry.entry_id, None)
+    if cleanup_errors:
+        raise cleanup_errors[0]
     return unload_ok
 
 

@@ -74,18 +74,29 @@ class HistoryCoordinator:
         return self._task
 
     async def async_shutdown(self) -> None:
-        """Cancel the pass and drain its current executor/storage operation."""
+        """Harvest the pass; ordinary unload drains, global stop retains disk order."""
         self._shutdown = True
         if self._task is not None:
             if not self._task.done():
                 self._task.cancel()
             try:
-                await self._task
+                await asyncio.shield(self._task)
             except asyncio.CancelledError:
-                pass
+                # Harvest the child's expected cancellation, but never hide a
+                # cancellation of the caller performing integration cleanup.
+                if asyncio.current_task().cancelling() or not self._task.cancelled():
+                    raise
+            except Exception:
+                _LOGGER.exception("Historical task failed; continuing entry cleanup")
 
     async def _fetch(self, function: Any, *args: Any) -> Any:
-        """Bound a request while retaining ownership of in-flight executor I/O."""
+        """Bound accepted results; ordinary unload drains the read-only request.
+
+        Core global stop can cancel HA's executor Future before its thread ends.
+        A cancelled/global-stop response never reaches facts or checkpoints. This
+        does not claim to terminate the HTTP worker; the client's own request
+        timeout remains its physical lifetime bound.
+        """
         if self._shutdown:
             raise asyncio.CancelledError
         job = asyncio.ensure_future(self.hass.async_add_executor_job(function, *args))
@@ -94,8 +105,9 @@ class HistoryCoordinator:
                 return await asyncio.shield(job)
         except (asyncio.CancelledError, TimeoutError) as err:
             cancelled = isinstance(err, asyncio.CancelledError)
-            # Executor threads cannot be cancelled. Drain before unload/reload or
-            # another historical request, without consuming their returned facts.
+            # Drain ordinary unload/timeout without consuming late facts. A HA
+            # global stop may cancel job itself; done then means only that its
+            # Future is finished, and says nothing about the read-only worker.
             while not job.done():
                 try:
                     await asyncio.shield(job)
@@ -127,7 +139,11 @@ class HistoryCoordinator:
         ]
         pending = []
         for account in accounts:
-            progress = self.history_store.history_progress(account.account_number)
+            try:
+                progress = self.history_store.history_progress(account.account_number)
+            except Exception:
+                _LOGGER.exception("Could not read one account's history progress; retrying its range")
+                progress = {}
             done_daily = set(progress.get("completed_daily_months", []))
             done_scopes = progress.get("bill_year_scopes", {})
             daily = [month for month in months if month_key(month) not in done_daily]
