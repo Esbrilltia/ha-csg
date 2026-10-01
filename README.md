@@ -93,6 +93,27 @@ Balance, arrears, ladder state, and yesterday usage refresh at the configured
 interval (four hours by default). Daily billing details, monthly summaries, and
 yearly summaries refresh once per day.
 
+## Historical fact backfill
+
+In **Options → Settings**, set **Historical sync start month** to a calendar
+month in `YYYY-MM` format. This is the earliest month you permit the integration
+to fetch, shared by all payment accounts in that config entry. It does not
+claim that the API has data back to that month. Leave it empty to disable new
+backfill; existing facts and progress are retained. Upgrades do not enable it
+automatically.
+
+Each entry load starts one background pass through the previous calendar month
+in `Asia/Shanghai`. Daily usage is requested by month and official bills by year,
+sequentially, with independent progress for each account and lane. Confirmed
+units are skipped after restart or reload; failed units are retried on the next
+load. Extending the range fetches new units, including newly covered months
+within an already requested bill year. There is no periodic historical rescan.
+
+Facts and reconciliation are verified as persisted before each checkpoint is
+saved and verified. Missing readings stay missing, and reconciliation only
+compares complete daily coverage with official monthly usage. These historical
+facts do not change sensor data sources or publish Recorder statistics.
+
 ## API implementation
 
 [`custom_components/csg/csg_client/__init__.py`](custom_components/csg/csg_client/__init__.py)

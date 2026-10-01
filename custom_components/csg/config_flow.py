@@ -29,6 +29,7 @@ from .const import (
     CONF_BILLING_UPDATE_TIME,
     CONF_ELE_ACCOUNTS,
     CONF_GENERAL_ERROR,
+    CONF_HISTORY_START_MONTH,
     CONF_LOGIN_TYPE,
     CONF_REFRESH_QR_CODE,
     CONF_SETTINGS,
@@ -62,6 +63,7 @@ from .csg_client import (
     InvalidCredentials,
     LoginType,
 )
+from .history_helpers import month_key, parse_history_start_month
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -539,6 +541,9 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         billing_update_time = self._entry.data[CONF_SETTINGS].get(
             CONF_BILLING_UPDATE_TIME, DEFAULT_BILLING_UPDATE_TIME
         )
+        history_start = self._entry.data[CONF_SETTINGS].get(
+            CONF_HISTORY_START_MONTH, ""
+        )
         schema = vol.Schema(
             {
                 vol.Required(CONF_UPDATE_INTERVAL, default=update_interval): vol.All(
@@ -548,16 +553,33 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_BILLING_UPDATE_TIME,
                     default=billing_update_time,
                 ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_HISTORY_START_MONTH,
+                    default="",
+                    description={"suggested_value": history_start},
+                ): str,
             }
         )
         if user_input is None:
             return self.async_show_form(step_id=STEP_SETTINGS, data_schema=schema)
+
+        history_start = user_input.get(CONF_HISTORY_START_MONTH, "")
+        if history_start != "":
+            try:
+                history_start = month_key(parse_history_start_month(history_start))
+            except ValueError:
+                return self.async_show_form(
+                    step_id=STEP_SETTINGS,
+                    data_schema=schema,
+                    errors={CONF_HISTORY_START_MONTH: "invalid_history_start_month"},
+                )
 
         new_data = {
             **self._entry.data,
             CONF_SETTINGS: {
                 **self._entry.data[CONF_SETTINGS],
                 CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
+                CONF_HISTORY_START_MONTH: history_start,
                 CONF_BILLING_UPDATE_TIME: (
                     user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time).isoformat()
                     if hasattr(user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time), "isoformat")

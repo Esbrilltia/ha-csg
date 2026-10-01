@@ -310,16 +310,111 @@ class CSGHistoryStore:
         """
         if not self._persistence_pending:
             return
-        await self._store.async_save(self._data)
+        if await self._async_save_verified(deepcopy(self._data)):
+            self._persistence_pending = False
+
+    async def async_ensure_persisted(self) -> bool:
+        """Flush facts and confirm with the independent Store reader.
+
+        Return False on unconfirmed readback; raised save errors also require a
+        retry. Neither outcome permits a historical checkpoint to advance.
+        """
+        async with self._lock:
+            await self._async_save_pending()
+            return not self._persistence_pending
+
+    def history_progress(self, account: str) -> dict[str, Any]:
+        """Return confirmed checkpoints only, detached from the mutable payload."""
+        return deepcopy(self._account(account)["sync"].get("history_backfill", {}))
+
+    async def async_complete_history_unit(
+        self,
+        account: str,
+        *,
+        daily_month: tuple[int, int] | None = None,
+        bill_year: int | None = None,
+        bill_months: Iterable[tuple[int, int]] = (),
+    ) -> bool:
+        """Commit a checkpoint only after facts are durable, then verify it.
+
+        Bill checkpoints retain the requested scope so extensions within the same
+        year remain discoverable. Failed or cancelled saves never install an
+        unconfirmed checkpoint in memory; a durable checkpoint always follows
+        durable facts, even if cancellation interrupts its acknowledgement.
+        """
+        if (daily_month is None) == (bill_year is None):
+            raise ValueError("Specify exactly one history lane")
+        daily_key = (
+            _month_key(*_validate_month(daily_month)) if daily_month is not None else None
+        )
+        scope = sorted({_month_key(*_validate_month(month)) for month in bill_months})
+        if bill_year is not None:
+            dt.date(bill_year, 1, 1)
+            if not scope or any(int(key[:4]) != bill_year for key in scope):
+                raise ValueError("Bill scope must belong to the requested year")
+
+        async with self._lock:
+            self._account(account)
+            await self._async_save_pending()
+            if self._persistence_pending:
+                return False
+            payload = deepcopy(self._data)
+            sync = payload["accounts"][account]["sync"]
+            progress = sync.setdefault("history_backfill", {})
+            daily = set(progress.get("completed_daily_months", []))
+            years = set(progress.get("completed_bill_years", []))
+            scopes = progress.setdefault("bill_year_scopes", {})
+            if daily_key is not None:
+                daily.add(daily_key)
+            else:
+                years.add(bill_year)
+                key = str(bill_year)
+                scopes[key] = sorted(set(scopes.get(key, [])) | set(scope))
+            progress["completed_daily_months"] = sorted(daily)
+            progress["completed_bill_years"] = sorted(years)
+            progress["last_completed_at"] = _utcnow_iso()
+            sync["last_history_sync"] = progress["last_completed_at"]
+            if not await self._async_save_verified(payload):
+                return False
+            self._data = payload
+            return True
+
+    async def _async_save_verified(self, payload: dict[str, Any]) -> bool:
+        """Drain an in-flight write/readback before releasing the lock on cancel.
+
+        Cancelling an executor await cannot stop its underlying disk write. Keep
+        the immutable snapshot and lock alive until I/O finishes, including during
+        unload, so an old task cannot overwrite a subsequent lifecycle's state.
+        """
+        task = asyncio.create_task(self._async_write_and_verify(payload))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if cancelled:
+            # Retrieve any exception before propagating cancellation.
+            try:
+                task.result()
+            finally:
+                raise asyncio.CancelledError
+        return task.result()
+
+    async def _async_write_and_verify(self, payload: dict[str, Any]) -> bool:
+        """Save one snapshot and verify using public Store APIs."""
+        await self._store.async_save(payload)
         try:
             persisted = await self._verification_store.async_load()
         except (HomeAssistantError, OSError):
             _LOGGER.exception("Could not verify history persistence; keeping save pending")
-            return
-        if persisted == self._data:
-            self._persistence_pending = False
-        else:
-            _LOGGER.warning("History persistence not confirmed; keeping save pending")
+            return False
+        if persisted == payload:
+            return True
+        _LOGGER.warning("History persistence not confirmed; keeping save pending")
+        return False
 
     def daily_usage(
         self, account: str, day: str

@@ -52,8 +52,9 @@
     "step": {
       "init": {"title": "选择操作", "menu_options": {"add_account": "添加已绑定的缴费号", "settings": "参数设置"}},
       "add_account": {"title": "选择缴费号"},
-      "settings": {"title": "参数设置", "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间"}}
+      "settings": {"title": "参数设置", "data_description": {"history_start_month": "允许获取历史事实的最早月份；留空可关闭新的历史同步。"}, "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间", "history_start_month": "历史同步起始月份（YYYY-MM）"}}
     },
+    "error": {"invalid_history_start_month": "请输入有效的日历月份（YYYY-MM），或留空以关闭历史同步。"},
     "abort": {"no_account": "账户未绑定缴费号", "all_added": "没有可添加到此集成的缴费号"}
   }
 }
