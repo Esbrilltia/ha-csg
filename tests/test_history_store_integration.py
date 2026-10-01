@@ -105,6 +105,7 @@ def rig(monkeypatch):
     entry = SimpleNamespace(
         entry_id="integration-test",
         title="CSG",
+        async_on_unload=Mock(),
         data={
             CONF_AUTH_TOKEN: "test",
             CONF_USERNAME: "test-user",

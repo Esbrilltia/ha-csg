@@ -57,7 +57,7 @@
 
 通过 [HACS](https://hacs.xyz/) 安装，或从 [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg/releases) 下载发行版本。
 
-需要 Home Assistant `2024.4` 或更新版本。
+当前开发和测试基线为 Home Assistant Core `2026.9.3` / Python `3.14.2`。其他 Home Assistant 版本可能可用，但未经本项目测试，不属于保证的兼容范围。
 
 ## 升级到 v2 的破坏性变更
 

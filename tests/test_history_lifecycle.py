@@ -9,18 +9,20 @@ import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import json as ha_json
+from homeassistant.helpers import storage as ha_storage
 from homeassistant.util import json as json_util
 
 from custom_components.csg import history_coordinator as coordinator_module
 from custom_components.csg import history_store as store_module
 from custom_components.csg.const import (
     CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
+    CONF_UPDATE_INTERVAL, DOMAIN,
 )
 from custom_components.csg.csg_client import CSGClient, CSGElectricityAccount
 from custom_components.csg.history_coordinator import HistoryCoordinator
@@ -72,10 +74,13 @@ def worlds(monkeypatch, tmp_path):
             version=1, minor_version=1, domain="csg", title="Synthetic lifecycle",
             data={
                 CONF_AUTH_TOKEN: "synthetic", CONF_SETTINGS: {CONF_HISTORY_START_MONTH: "2024-02"},
+                CONF_USERNAME: "synthetic-user",
                 CONF_ELE_ACCOUNTS: {ACCOUNT: CSGElectricityAccount(ACCOUNT).dump()},
             },
             options={}, source="user", unique_id=None, discovery_keys={}, entry_id="synthetic-lifecycle",
+            subentries_data=None,
         )
+        entry.data[CONF_SETTINGS][CONF_UPDATE_INTERVAL] = 3600
         store = CSGHistoryStore(hass, entry.entry_id)
         await store.async_load()
         coordinator = HistoryCoordinator(hass, entry, store)
@@ -83,6 +88,69 @@ def worlds(monkeypatch, tmp_path):
         return hass, store, coordinator, cloud
 
     return build
+
+
+def test_config_entry_cleanup_repeats_manual_billing_shutdown_safely(worlds, monkeypatch):
+    """Manual unload followed by HA's real entry callbacks cancels each timer once."""
+    import custom_components.csg as integration
+    from custom_components.csg import sensor
+
+    async def scenario():
+        hass, store, history, _ = await worlds()
+        entry = history.entry
+        events = []
+        active = set()
+        coordinators = []
+        monkeypatch.setattr(sensor.CSGCoordinator, "async_refresh", AsyncMock())
+
+        def track(_hass, _callback, **kwargs):
+            token = object()
+            active.add(token)
+
+            def cancel():
+                active.remove(token)  # A duplicate unregister is an error.
+                events.append("timer")
+
+            return cancel
+
+        async def forward(*args):
+            await sensor.async_setup_entry(hass, entry, lambda entities: coordinators.extend(
+                {entity.coordinator for entity in entities}
+            ))
+
+        async def unload(*args):
+            events.append("platforms")
+            return True
+
+        monkeypatch.setattr(sensor, "async_track_time_change", track)
+        hass.config_entries = SimpleNamespace(
+            async_forward_entry_setups=forward, async_unload_platforms=unload,
+        )
+        try:
+            # Use the actual sensor setup over the already loaded shared Store.
+            hass.data[DOMAIN] = {entry.entry_id: {"history_store": store}}
+            await forward()
+            assert len(coordinators) == 3
+            assert all(coordinator.config_entry is entry for coordinator in coordinators)
+            assert len(entry._on_unload) == 3
+            assert len(active) == 1
+            assert await integration.async_unload_entry(hass, entry)
+            assert events == ["timer", "platforms"]
+            # Execute HA 2026.9.3's real callback/task cleanup chain after the
+            # integration's manual Billing shutdown, just as entry unload does.
+            await entry._async_process_on_unload(hass)
+            await entry._async_process_on_unload(hass)
+            await next(c for c in coordinators if isinstance(c, sensor.BillingCoordinator)).async_shutdown()
+            assert events == ["timer", "platforms"]
+            assert not active
+            assert all(coordinator._shutdown_requested for coordinator in coordinators)
+            assert not entry._on_unload and not entry._tasks
+            assert entry.entry_id not in hass.data[DOMAIN]
+        finally:
+            await history.async_shutdown()
+            await hass.async_stop(force=True)
+
+    asyncio.run(scenario())
 
 
 async def thread_event(event):
@@ -107,7 +175,7 @@ def test_global_stop_retains_worker_order_and_newer_fact(worlds, monkeypatch, st
         events = []
         blocked = False
         last_checkpoint = False
-        original_write, original_read = ha_json.write_utf8_file, json_util.load_json
+        original_write, original_read = ha_storage.write_utf8_file, json_util.load_json
         historical = recent = stopping = None
         fresh_hass = None
 
@@ -168,12 +236,14 @@ def test_global_stop_retains_worker_order_and_newer_fact(worlds, monkeypatch, st
             future = original_submit(function, *args)
             # Observe submission, rather than waiting for this newer disk worker
             # to enter: it must remain queued behind the blocked older worker.
-            if getattr(function, "__name__", None) == "_write_data":
-                if selected(args[-1]["data"])[0] == 3:
+            # HA 2026.9.3 serializes in the event loop, then queues this
+            # physical write through the unchanged HistoryStorageHass lane.
+            if getattr(function, "__name__", None) == "_write_prepared_data":
+                if selected(json.loads(args[-1])["data"])[0] == 3:
                     newer_write_queued.set()
             return future
 
-        monkeypatch.setattr(ha_json, "write_utf8_file", write)
+        monkeypatch.setattr(ha_storage, "write_utf8_file", write)
         monkeypatch.setattr(json_util, "load_json", read)
         monkeypatch.setattr(store._store, "async_save", save)
         monkeypatch.setattr(delegate, "async_add_executor_job", submit)
@@ -233,7 +303,7 @@ def test_global_stop_returns_while_worker_owns_disk_then_new_instance_waits(worl
         hass, store, coordinator, _ = await worlds()
         await hass.async_start()
         entered, release, ended = threading.Event(), threading.Event(), threading.Event()
-        original = ha_json.write_utf8_file
+        original = ha_storage.write_utf8_file
         fresh_hass = None
         loading = None
         def write(path, text, *args, **kwargs):
@@ -245,7 +315,7 @@ def test_global_stop_returns_while_worker_owns_disk_then_new_instance_waits(worl
                 finally:
                     ended.set()
             return original(path, text, *args, **kwargs)
-        monkeypatch.setattr(ha_json, "write_utf8_file", write)
+        monkeypatch.setattr(ha_storage, "write_utf8_file", write)
         try:
             task = coordinator.start()
             await thread_event(entered)
@@ -278,7 +348,7 @@ def test_global_stop_returns_while_worker_owns_disk_then_new_instance_waits(worl
 def test_closed_old_event_loop_cannot_release_disk_order_to_new_loop(worlds, monkeypatch):
     """Physical ordering survives the old HA loop and executor lifecycle too."""
     entered, release, ended = threading.Event(), threading.Event(), threading.Event()
-    original = ha_json.write_utf8_file
+    original = ha_storage.write_utf8_file
 
     def write(path, text, *args, **kwargs):
         if not entered.is_set():
@@ -290,7 +360,7 @@ def test_closed_old_event_loop_cannot_release_disk_order_to_new_loop(worlds, mon
                 ended.set()
         return original(path, text, *args, **kwargs)
 
-    monkeypatch.setattr(ha_json, "write_utf8_file", write)
+    monkeypatch.setattr(ha_storage, "write_utf8_file", write)
 
     async def old_lifecycle():
         hass, _, coordinator, _ = await worlds()

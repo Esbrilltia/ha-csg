@@ -23,10 +23,10 @@ def _leaves(value: object, prefix: str = "") -> dict[str, str]:
 
 def test_translation_keys_and_placeholders_match_default_language() -> None:
     """Every runtime translation mirrors the default resource structure."""
-    default = _leaves(json.loads((ROOT / "strings.json").read_text()))
+    default = _leaves(json.loads((ROOT / "strings.json").read_text(encoding="utf-8")))
     for language in ("en", "zh-Hans"):
         translated = _leaves(
-            json.loads((ROOT / "translations" / f"{language}.json").read_text())
+            json.loads((ROOT / "translations" / f"{language}.json").read_text(encoding="utf-8"))
         )
         assert default.keys() == translated.keys()
         for key, default_value in default.items():
@@ -37,6 +37,6 @@ def test_translation_keys_and_placeholders_match_default_language() -> None:
 
 def test_runtime_english_translation_matches_default_resource() -> None:
     """Home Assistant loads en.json at runtime, so it must not drift from strings.json."""
-    default = json.loads((ROOT / "strings.json").read_text())
-    english = json.loads((ROOT / "translations" / "en.json").read_text())
+    default = json.loads((ROOT / "strings.json").read_text(encoding="utf-8"))
+    english = json.loads((ROOT / "translations" / "en.json").read_text(encoding="utf-8"))
     assert english == default

@@ -75,7 +75,7 @@ To configure Home Assistant Energy, select:
 Install through [HACS](https://hacs.xyz/) or download a release from
 [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg/releases).
 
-Home Assistant `2024.4` or newer is required.
+The current development and test baseline is Home Assistant Core `2026.9.3` / Python `3.14.2`. Other Home Assistant versions may work, but are unsupported and untested by this project.
 
 ## Breaking upgrade to v2
 

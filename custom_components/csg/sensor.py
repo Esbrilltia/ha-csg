@@ -566,6 +566,7 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=name,
             update_interval=timedelta(
                 seconds=entry.data[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
