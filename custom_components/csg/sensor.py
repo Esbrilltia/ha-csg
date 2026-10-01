@@ -1114,26 +1114,16 @@ class BillingCoordinator(CSGCoordinator):
                 data[usage_suffix] = usage
                 data[cost_suffix] = cost
 
-                # Ingest every bill independently of the display loop's break.
-                for month_data in by_month:
-                    month = _parse_bill_month(
-                        month_data.get(WF_ATTR_MONTH)
-                        if isinstance(month_data, Mapping)
-                        else None
-                    )
-                    if month is None:
-                        _LOGGER.warning(
-                            "Skipped malformed monthly bill month for %s/%s",
-                            account.account_number,
-                            year,
-                        )
-                        continue
+                # Resolve this response's candidates before any monthly revision.
+                for month, values in _collect_monthly_bill_candidates(
+                    by_month, account.account_number, year
+                ).items():
                     await _async_shadow_write(
                         self.history_store.async_upsert_monthly_bill(
                             account.account_number,
                             month,
-                            usage_kwh=month_data.get(WF_ATTR_KWH),
-                            cost_cny=month_data.get(WF_ATTR_CHARGE),
+                            usage_kwh=values[0],
+                            cost_cny=values[1],
                         )
                     )
 
@@ -1420,6 +1410,52 @@ def _parse_bill_month(value: Any) -> tuple[int, int] | None:
     except ValueError:
         return None
     return year, month
+
+
+def _collect_monthly_bill_candidates(
+    by_month: Iterable[Any],
+    account: str,
+    year: int,
+) -> dict[tuple[int, int], tuple[float | None, float | None]]:
+    """Accept one candidate per month only when this response has no conflict."""
+    candidates: dict[tuple[int, int], dict[str, set[float]]] = {}
+    for row in by_month:
+        month = _parse_bill_month(
+            row.get(WF_ATTR_MONTH) if isinstance(row, Mapping) else None
+        )
+        if month is None:
+            _LOGGER.warning(
+                "Skipped malformed monthly bill month for %s/%s", account, year
+            )
+            continue
+        fields = candidates.setdefault(month, {WF_ATTR_KWH: set(), WF_ATTR_CHARGE: set()})
+        for key in fields:
+            value = row.get(key)
+            # Match the Store's numeric acceptance when comparing candidates.
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and number >= 0:
+                fields[key].add(number)
+
+    accepted: dict[tuple[int, int], tuple[float | None, float | None]] = {}
+    for month, fields in sorted(candidates.items()):
+        if any(len(values) > 1 for values in fields.values()):
+            _LOGGER.warning(
+                "Skipped monthly bill conflict for %s/%04d-%02d",
+                account,
+                month[0],
+                month[1],
+            )
+            continue
+        accepted[month] = (
+            next(iter(fields[WF_ATTR_KWH]), None),
+            next(iter(fields[WF_ATTR_CHARGE]), None),
+        )
+    return accepted
 
 
 def _merge_daily_days(usage_days: list[dict[str, Any]], cost_days: list[dict[str, Any]]) -> list[dict[str, float | str]]:
