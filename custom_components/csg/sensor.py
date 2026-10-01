@@ -6,7 +6,8 @@ import asyncio
 import datetime as dt
 import logging
 import math
-from collections.abc import Iterable
+import re
+from collections.abc import Awaitable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
@@ -78,6 +79,8 @@ from .csg_client import (
     CSGClient,
     CSGElectricityAccount,
 )
+
+from .history_store import CSGHistoryStore
 
 _LOGGER = logging.getLogger(__name__)
 _BILLING_DELAY = 2
@@ -389,9 +392,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         return
     ledger = EnergyLedger(hass, entry.entry_id)
     await ledger.async_load()
-    realtime = RealtimeCoordinator(hass, entry, ledger)
+    history_store = hass.data[DOMAIN][entry.entry_id]["history_store"]
+    realtime = RealtimeCoordinator(hass, entry, ledger, history_store)
     current = CurrentCoordinator(hass, entry, ledger)
-    billing = BillingCoordinator(hass, entry, ledger)
+    billing = BillingCoordinator(hass, entry, ledger, history_store)
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
         "billing_coordinator"
     ] = billing
@@ -613,6 +617,7 @@ class RealtimeCoordinator(CSGCoordinator):
         hass: HomeAssistant,
         entry: ConfigEntry,
         ledger: EnergyLedger,
+        history_store: CSGHistoryStore,
     ) -> None:
         super().__init__(
             hass,
@@ -620,6 +625,7 @@ class RealtimeCoordinator(CSGCoordinator):
             ledger,
             f"CSG realtime {entry.data[CONF_USERNAME]}",
         )
+        self.history_store = history_store
 
     def _ledger_total(self, account: str) -> Any:
         """Return the ledger's running total, or unavailable without one."""
@@ -711,6 +717,12 @@ class RealtimeCoordinator(CSGCoordinator):
                         err,
                     )
                     continue
+
+                await _async_shadow_write(
+                    self.history_store.async_upsert_daily_usage(
+                        account.account_number, (year, month), usage_days
+                    )
+                )
 
                 valid_days = [
                     item
@@ -853,8 +865,15 @@ class CurrentCoordinator(CSGCoordinator):
 class BillingCoordinator(CSGCoordinator):
     """Fetch delayed bill data and import corrections into Recorder statistics."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, ledger: EnergyLedger) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        ledger: EnergyLedger,
+        history_store: CSGHistoryStore,
+    ) -> None:
         super().__init__(hass, entry, ledger, f"CSG billing {entry.data[CONF_USERNAME]}")
+        self.history_store = history_store
         self.update_interval = None
         update_time = dt.time.fromisoformat(
             entry.data[CONF_SETTINGS].get(
@@ -937,6 +956,11 @@ class BillingCoordinator(CSGCoordinator):
                 )
 
             if usage_ok:
+                await _async_shadow_write(
+                    self.history_store.async_upsert_daily_usage(
+                        account.account_number, (year, month), usage_days
+                    )
+                )
                 merged = _merge_daily_days(
                     usage_days,
                     [],
@@ -1052,6 +1076,10 @@ class BillingCoordinator(CSGCoordinator):
             )
 
         await self._add_year_data(client, account, data)
+        for month in months:
+            await _async_shadow_write(
+                self.history_store.async_reconcile_month(account.account_number, month)
+            )
         return data
 
     async def _add_year_data(
@@ -1086,7 +1114,22 @@ class BillingCoordinator(CSGCoordinator):
                 data[usage_suffix] = usage
                 data[cost_suffix] = cost
 
+                # Resolve this response's candidates before any monthly revision.
+                for month, values in _collect_monthly_bill_candidates(
+                    by_month, account.account_number, year
+                ).items():
+                    await _async_shadow_write(
+                        self.history_store.async_upsert_monthly_bill(
+                            account.account_number,
+                            month,
+                            usage_kwh=values[0],
+                            cost_cny=values[1],
+                        )
+                    )
+
                 for month_data in by_month:
+                    if not isinstance(month_data, Mapping):
+                        continue
                     month_key = str(
                         month_data.get(WF_ATTR_MONTH, "")
                     ).replace("-", "")
@@ -1345,6 +1388,74 @@ class BillingCoordinator(CSGCoordinator):
         if entity_id is None:
             raise ValueError(f"Entity registry has no entity for {unique_id}")
         return entity_id
+
+
+async def _async_shadow_write(operation: Awaitable[Any]) -> None:
+    """Keep a failed history write from interrupting the legacy data path."""
+    try:
+        await operation
+    except Exception:
+        _LOGGER.exception("HistoryStore shadow write failed; continuing legacy update")
+
+
+def _parse_bill_month(value: Any) -> tuple[int, int] | None:
+    """Accept only the API's YYYYMM and YYYY-MM calendar month formats."""
+    text = str(value)
+    if re.fullmatch(r"[0-9]{4}-?[0-9]{2}", text) is None:
+        return None
+    compact = text.replace("-", "")
+    year, month = int(compact[:4]), int(compact[4:])
+    try:
+        dt.date(year, month, 1)
+    except ValueError:
+        return None
+    return year, month
+
+
+def _collect_monthly_bill_candidates(
+    by_month: Iterable[Any],
+    account: str,
+    year: int,
+) -> dict[tuple[int, int], tuple[float | None, float | None]]:
+    """Accept one candidate per month only when this response has no conflict."""
+    candidates: dict[tuple[int, int], dict[str, set[float]]] = {}
+    for row in by_month:
+        month = _parse_bill_month(
+            row.get(WF_ATTR_MONTH) if isinstance(row, Mapping) else None
+        )
+        if month is None:
+            _LOGGER.warning(
+                "Skipped malformed monthly bill month for %s/%s", account, year
+            )
+            continue
+        fields = candidates.setdefault(month, {WF_ATTR_KWH: set(), WF_ATTR_CHARGE: set()})
+        for key in fields:
+            value = row.get(key)
+            # Match the Store's numeric acceptance when comparing candidates.
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and number >= 0:
+                fields[key].add(number)
+
+    accepted: dict[tuple[int, int], tuple[float | None, float | None]] = {}
+    for month, fields in sorted(candidates.items()):
+        if any(len(values) > 1 for values in fields.values()):
+            _LOGGER.warning(
+                "Skipped monthly bill conflict for %s/%04d-%02d",
+                account,
+                month[0],
+                month[1],
+            )
+            continue
+        accepted[month] = (
+            next(iter(fields[WF_ATTR_KWH]), None),
+            next(iter(fields[WF_ATTR_CHARGE]), None),
+        )
+    return accepted
 
 
 def _merge_daily_days(usage_days: list[dict[str, Any]], cost_days: list[dict[str, Any]]) -> list[dict[str, float | str]]:

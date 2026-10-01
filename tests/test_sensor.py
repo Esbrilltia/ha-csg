@@ -7,6 +7,7 @@ import datetime as dt
 import logging
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -509,6 +510,7 @@ class FakeBillingCoordinator:
 
     def __init__(self) -> None:
         self.ledger = FakeLedger()
+        self.history_store = AsyncMock()
         self.corrected: dict | None = None
         self.verified: dict = {}
 
@@ -666,6 +668,7 @@ def make_realtime_coordinator(ledger: EnergyLedger, client: FakeUsageClient):
     coordinator.hass = object()
     coordinator.entry = SimpleNamespace(entry_id="entry")
     coordinator.ledger = ledger
+    coordinator.history_store = AsyncMock()
 
     async def _client():
         return client
@@ -850,6 +853,7 @@ class FakeRealtimeCoordinator(RealtimeCoordinator):
     def __init__(self, client: FakeRealtimeClient) -> None:
         self.client = client
         self.ledger = make_ledger()
+        self.history_store = AsyncMock()
         self.notifications: list[tuple[str, str, Exception]] = []
         self.dismissed: list[tuple[str, str]] = []
 

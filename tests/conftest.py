@@ -5,11 +5,31 @@ from __future__ import annotations
 import sys
 import datetime as dt
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+@pytest.fixture(autouse=True)
+def daily_usage_history_dependency(request, monkeypatch):
+    """Supply the new dependency to B2's constructor-bypassing test factory."""
+    if request.module.__name__ != "test_daily_usage":
+        return
+    from custom_components.csg.history_store import CSGHistoryStore
+    from custom_components.csg.sensor import BillingCoordinator, RealtimeCoordinator
+
+    original = request.module.make_coordinator
+
+    def make_coordinator(kind, client, ledger):
+        coordinator = original(kind, client, ledger)
+        if kind in (RealtimeCoordinator, BillingCoordinator):
+            coordinator.history_store = AsyncMock(spec=CSGHistoryStore)
+        return coordinator
+
+    monkeypatch.setattr(request.module, "make_coordinator", make_coordinator)
 
 
 class RecorderHarness:

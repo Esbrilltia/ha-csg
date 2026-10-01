@@ -27,6 +27,7 @@ from .csg_client import (
     InvalidCredentials,
     NotLoggedIn,
 )
+from .history_store import CSGHistoryStore
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +49,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not logged_in:
         raise ConfigEntryAuthFailed("Login expired")
 
-    hass.data[DOMAIN][entry.entry_id] = {}
+    history_store = CSGHistoryStore(hass, entry.entry_id)
+    await history_store.async_load()
+    hass.data[DOMAIN][entry.entry_id] = {"history_store": history_store}
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
