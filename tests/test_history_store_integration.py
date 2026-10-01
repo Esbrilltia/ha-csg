@@ -81,15 +81,21 @@ class Client:
 def rig(monkeypatch):
     """Construct real business objects over a keyed in-memory HA Store adapter."""
     persisted = {}
+    history_io = {"save": 0, "readback": 0}
 
     class Storage:
         def __init__(self, hass, version, key, **kwargs):
             self.key = key
+            self.read_only = kwargs.get("read_only", False)
 
         async def async_load(self):
+            if self.read_only:
+                history_io["readback"] += 1
             return deepcopy(persisted.get(self.key))
 
         async def async_save(self, data):
+            if self.key.startswith(history_module.HISTORY_STORAGE_KEY):
+                history_io["save"] += 1
             persisted[self.key] = deepcopy(data)
 
     async def execute(function, *args):
@@ -136,7 +142,8 @@ def rig(monkeypatch):
         )
 
     return SimpleNamespace(
-        build=build, client=client, entry=entry, hass=hass, persisted=persisted
+        build=build, client=client, entry=entry, hass=hass, persisted=persisted,
+        history_io=history_io,
     )
 
 
@@ -488,5 +495,184 @@ def test_shadow_write_failure_preserves_legacy_data_and_reports_error(rig, monke
         assert objects.ledger.energy_total("account") == 4
         assert objects.ledger.billing_days("account")["2026-09-02"] == {"kwh": 4}
         assert "HistoryStore shadow write failed" in caplog.text
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("order", list(permutations(((10, 5), (20, 10), (30, 15)))))
+def test_monthly_conflict_permutations_and_repeated_refetch_preserve_old_fact(
+    rig, monkeypatch, caplog, order
+):
+    """A conflicting batch never revisions a month, including after refetch."""
+    rows = [{"month": "202608", "kwh": usage, "charge": cost} for usage, cost in order]
+    rows.insert(1, {"month": "2026-07", "kwh": 7, "charge": 3})
+    rig.client.years["account", 2026] = (33, 60, rows)
+
+    async def exercise():
+        objects = await rig.build()
+        await objects.history.async_upsert_monthly_bill(
+            "account", (2026, 8), usage_kwh=4, cost_cny=2
+        )
+        old = objects.history.monthly_bill("account", (2026, 8))
+        upsert = AsyncMock(wraps=objects.history.async_upsert_monthly_bill)
+        objects.history.async_upsert_monthly_bill = upsert
+        rig.history_io.update(save=0, readback=0)
+
+        for refresh in range(2):
+            monkeypatch.setattr(history_module, "_utcnow_iso", lambda: f"refresh-{refresh}")
+            data = {}
+            await objects.billing._add_year_data(
+                rig.client, CSGElectricityAccount("account"), data
+            )
+            assert objects.history.monthly_bill("account", (2026, 8)) == old
+            assert rig.persisted[objects.history._store.key]["accounts"]["account"]["monthly_bills"]["2026-08"] == old
+            assert objects.history.monthly_bill("account", (2026, 7))["usage_kwh"] == 7
+            assert objects.history.monthly_bill("account", (2026, 7))["cost_cny"] == 3
+            assert upsert.await_args_list == [
+                call("account", (2026, 7), usage_kwh=7, cost_cny=3)
+            ] * (refresh + 1)
+            # Only July's first insertion saves; conflicts and the refetch add no I/O.
+            assert rig.history_io == {"save": 1, "readback": 1}
+            assert data[SUFFIX_LAST_MONTH_COST] == order[0][1]
+            assert data[SUFFIX_THIS_YEAR_KWH] == 60
+            assert data[SUFFIX_THIS_YEAR_COST] == 33
+
+        assert rig.client.calls == [
+            ("year", "account", 2026), ("year", "account", 2025)
+        ] * 2
+        assert any(
+            "account" in record.getMessage()
+            and "2026-08" in record.getMessage()
+            and "conflict" in record.getMessage().lower()
+            for record in caplog.records
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("values", [((10, 5), (20, 5)), ((10, 5), (10, 6))], ids=["usage-only", "cost-only"])
+def test_monthly_conflict_in_either_field_skips_entire_month(rig, values):
+    rig.client.years["account", 2026] = (0, 0, [
+        {"month": "202608", "kwh": usage, "charge": cost}
+        for usage, cost in values
+    ])
+
+    async def exercise():
+        objects = await rig.build()
+        await objects.history.async_upsert_monthly_bill(
+            "account", (2026, 8), usage_kwh=4, cost_cny=2
+        )
+        old = objects.history.monthly_bill("account", (2026, 8))
+        before_io = dict(rig.history_io)
+        upsert = AsyncMock(wraps=objects.history.async_upsert_monthly_bill)
+        objects.history.async_upsert_monthly_bill = upsert
+        await objects.billing._add_year_data(rig.client, CSGElectricityAccount("account"), {})
+        assert objects.history.monthly_bill("account", (2026, 8)) == old
+        upsert.assert_not_awaited()
+        assert rig.history_io == before_io
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("months", [("202608",) * 3, ("202608", "2026-08", "202608")], ids=["identical-rows", "canonical-aliases"])
+def test_monthly_candidates_deduplicate_identical_rows_once_and_allow_later_revision(
+    rig, monkeypatch, months
+):
+    rig.client.years["account", 2026] = (5, 10, [
+        {"month": month, "kwh": 10, "charge": 5} for month in months
+    ])
+
+    async def exercise():
+        objects = await rig.build()
+        upsert = AsyncMock(wraps=objects.history.async_upsert_monthly_bill)
+        objects.history.async_upsert_monthly_bill = upsert
+        await objects.billing._add_year_data(rig.client, CSGElectricityAccount("account"), {})
+        upsert.assert_awaited_once_with("account", (2026, 8), usage_kwh=10, cost_cny=5)
+        assert rig.history_io == {"save": 1, "readback": 1}
+        old = objects.history.monthly_bill("account", (2026, 8))
+        assert old == {"usage_kwh": 10, "cost_cny": 5, "source": "year_month_stats", "updated_at": "first"}
+
+        # A new API response still has the audited right to revise official facts.
+        monkeypatch.setattr(history_module, "_utcnow_iso", lambda: "later-refetch")
+        rig.client.years["account", 2026] = (6, 12, [
+            {"month": "2026-08", "kwh": 12, "charge": 6}
+        ])
+        await objects.billing._add_year_data(rig.client, CSGElectricityAccount("account"), {})
+        assert objects.history.monthly_bill("account", (2026, 8)) == {
+            "usage_kwh": 12, "cost_cny": 6, "source": "year_month_stats", "updated_at": "later-refetch",
+        }
+        assert rig.history_io == {"save": 2, "readback": 2}
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["no-old-fact", "existing-fact"])
+def test_monthly_conflict_canonical_aliases_do_not_create_or_modify_fact(rig, existing):
+    rig.client.years["account", 2026] = (0, 0, [
+        {"month": "202608", "kwh": 10, "charge": 5},
+        {"month": "2026-08", "kwh": 20, "charge": 10},
+    ])
+
+    async def exercise():
+        objects = await rig.build()
+        if existing:
+            await objects.history.async_upsert_monthly_bill(
+                "account", (2026, 8), usage_kwh=4, cost_cny=2
+            )
+        old = objects.history.monthly_bill("account", (2026, 8))
+        before_io = dict(rig.history_io)
+        for _ in range(2):
+            await objects.billing._add_year_data(rig.client, CSGElectricityAccount("account"), {})
+            assert objects.history.monthly_bill("account", (2026, 8)) == old
+            assert rig.history_io == before_io
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("order", [False, True], ids=["forward", "reverse"])
+def test_monthly_candidates_combine_only_nonconflicting_valid_partial_fields(rig, order):
+    rows = [
+        {"month": "202608", "kwh": "0", "charge": None},
+        {"month": "2026-08", "charge": "5"},
+        {"month": "202608", "kwh": float("nan"), "charge": True},
+        {"month": "202608", "kwh": -1, "charge": float("inf")},
+        {"month": "202608", "kwh": "invalid", "charge": -1},
+    ]
+    rig.client.years["account", 2026] = (5, 0, rows[::-1] if order else rows)
+
+    async def exercise():
+        objects = await rig.build()
+        upsert = AsyncMock(wraps=objects.history.async_upsert_monthly_bill)
+        objects.history.async_upsert_monthly_bill = upsert
+        await objects.billing._add_year_data(rig.client, CSGElectricityAccount("account"), {})
+        upsert.assert_awaited_once_with("account", (2026, 8), usage_kwh=0, cost_cny=5)
+        assert objects.history.monthly_bill("account", (2026, 8))["usage_kwh"] == 0
+        assert objects.history.monthly_bill("account", (2026, 8))["cost_cny"] == 5
+        assert rig.history_io == {"save": 1, "readback": 1}
+
+    asyncio.run(exercise())
+
+
+def test_monthly_candidates_distinct_months_keep_billing_io_and_api_counts(rig):
+    """One account's 12+12 bills retain the audited first/repeat I/O counts."""
+    rig.entry.data[CONF_ELE_ACCOUNTS].pop("other")
+    for year in (2026, 2025):
+        rig.client.years["account", year] = (60, 120, [
+            {"month": f"{year}{month:02d}", "kwh": 10, "charge": 5}
+            for month in range(1, 13)
+        ])
+
+    async def exercise():
+        objects = await rig.build()
+        await objects.billing._async_update_data()
+        assert rig.history_io == {"save": 28, "readback": 28}
+        assert len(objects.history._data["accounts"]["account"]["monthly_bills"]) == 24
+        rig.history_io.update(save=0, readback=0)
+        await objects.billing._async_update_data()
+        assert rig.history_io == {"save": 2, "readback": 2}
+        assert rig.client.calls == [
+            ("daily", "account", (2026, 9)), ("daily", "account", (2026, 8)),
+            ("year", "account", 2026), ("year", "account", 2025),
+        ] * 2
 
     asyncio.run(exercise())
