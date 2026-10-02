@@ -106,11 +106,13 @@ def recorder_world(tmp_path, monkeypatch):
                                   recorder=recorder, imports=imports, sync=sync, upsert=upsert,
                                   query=query, drain=drain, statistic_id=statistic_id)
         finally:
-            await bridge.async_shutdown()
-            await entry._async_process_on_unload(hass)
-            await hass.async_stop(force=True)
-            get_instance.cache_clear()
-            dt_util.set_default_time_zone(old_zone)
+            try:
+                await bridge.async_shutdown()
+            finally:
+                await entry._async_process_on_unload(hass)
+                await hass.async_stop(force=True)
+                get_instance.cache_clear()
+                dt_util.set_default_time_zone(old_zone)
     return world
 
 
@@ -245,4 +247,7 @@ def test_real_recorder_anomalies_preserve_existing_statistics(recorder_world, an
                 get_metadata, world.hass, statistic_ids={world.statistic_id},
             ))
             assert {key: actual[world.statistic_id][1][key] for key in metadata} == metadata
+            with pytest.raises(ValueError):
+                await world.bridge.async_shutdown()
+            assert not world.imports and await world.query() == before
     asyncio.run(scenario())

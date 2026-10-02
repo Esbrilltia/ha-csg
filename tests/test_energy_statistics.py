@@ -446,7 +446,7 @@ def test_requests_coalesce_and_one_dirty_pass_observes_latest_snapshot(rig):
     asyncio.run(scenario())
 
 
-def test_shutdown_cancels_active_read_is_repeatable_and_blocks_future_requests(rig):
+def test_shutdown_drains_active_read_is_repeatable_and_blocks_future_requests(rig):
     async def scenario():
         await rig.upsert({"2026-09-01": 2})
         rig.recorder.read_started = asyncio.Event()
@@ -455,12 +455,16 @@ def test_shutdown_cancels_active_read_is_repeatable_and_blocks_future_requests(r
         await rig.recorder.read_started.wait()
         task = rig.bridge._task
         rig.bridge.request_sync()
-        await rig.bridge.async_shutdown()
+        shutting_down = asyncio.create_task(rig.bridge.async_shutdown())
+        await asyncio.sleep(0)
+        assert not shutting_down.done() and not rig.bridge._accepting
+        rig.recorder.read_release.set()
+        await shutting_down
         await asyncio.gather(syncing, return_exceptions=True)
         await rig.bridge.async_shutdown()
         rig.bridge.request_sync()
-        assert task.cancelled() and rig.bridge._task is None
-        assert not rig.recorder.imports and all(task.done() for task in rig.tasks)
+        assert not task.cancelled() and rig.bridge._task is None
+        assert len(rig.recorder.imports) == 1 and all(task.done() for task in rig.tasks)
     asyncio.run(scenario())
 
 

@@ -41,7 +41,7 @@ def test_history_requests_once_per_completed_pass_not_per_month(history_rig):
     asyncio.run(scenario())
 
 
-def test_entry_initial_request_and_two_phase_shutdown_order(recent_rig, monkeypatch):
+def test_entry_initial_request_and_all_producer_shutdown_order(recent_rig, monkeypatch):
     events = []
     bridge = SimpleNamespace(
         request_sync=Mock(side_effect=lambda: events.append("initial")),
@@ -62,8 +62,9 @@ def test_entry_initial_request_and_two_phase_shutdown_order(recent_rig, monkeypa
         assert events == ["forward", "initial"]
         runtime["history_coordinator"] = SimpleNamespace(async_shutdown=AsyncMock(side_effect=lambda: events.append("history")))
         runtime["billing_coordinator"] = SimpleNamespace(async_shutdown=AsyncMock(side_effect=lambda: events.append("billing")))
+        runtime["realtime_coordinator"] = SimpleNamespace(async_shutdown=AsyncMock(side_effect=lambda: events.append("realtime")))
         assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
-        assert events == ["forward", "initial", "close requests", "history", "billing", "bridge", "platforms"]
+        assert events == ["forward", "initial", "close requests", "history", "billing", "realtime", "bridge", "platforms"]
         assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
         bridge.async_shutdown.assert_awaited_once()
     asyncio.run(scenario())
@@ -87,7 +88,8 @@ def test_optional_recorder_failure_does_not_fail_entry_setup(recent_rig, monkeyp
         await tasks[0]
         assert "history_store" in recent_rig.hass.data[DOMAIN][recent_rig.entry.entry_id]
         recent_rig.hass.config_entries.async_forward_entry_setups.assert_awaited_once()
-        assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
+        with pytest.raises(KeyError, match="Recorder absent"):
+            await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
         assert all(task.done() for task in tasks)
     asyncio.run(scenario())
     assert "pass unavailable" in caplog.text

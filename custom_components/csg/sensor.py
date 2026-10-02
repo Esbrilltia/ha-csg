@@ -400,6 +400,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     realtime = RealtimeCoordinator(hass, entry, ledger, history_store, bridge)
     current = CurrentCoordinator(hass, entry, ledger)
     billing = BillingCoordinator(hass, entry, ledger, history_store, bridge)
+    hass.data[DOMAIN][entry.entry_id]["realtime_coordinator"] = realtime
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
         "billing_coordinator"
     ] = billing
@@ -614,7 +615,44 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         )
 
 
-class RealtimeCoordinator(CSGCoordinator):
+class CSGFactCoordinator(CSGCoordinator):
+    """Drain admitted refreshes before the entry's final statistics pass."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._fact_updates: set[asyncio.Task] = set()
+        self._fact_updates_drained = asyncio.Event()
+        self._fact_updates_drained.set()
+
+    async def _async_refresh(self, *args, **kwargs) -> None:
+        # Every production refresh route (scheduled, explicit and debounced)
+        # reaches this method. Core's shutdown only closes future refreshes;
+        # it does not await an already running _async_update_data.
+        if self._shutdown_requested:
+            return
+        task = asyncio.current_task()
+        self._fact_updates.add(task)
+        self._fact_updates_drained.clear()
+        try:
+            await super()._async_refresh(*args, **kwargs)
+        finally:
+            self._fact_updates.remove(task)
+            if not self._fact_updates:
+                self._fact_updates_drained.set()
+
+    async def async_shutdown(self) -> None:
+        """Close refresh admission, then wait for all admitted fact writers."""
+        await super().async_shutdown()
+        if self.hass.is_stopping:
+            for task in self._fact_updates:
+                task.cancel()
+            return
+        # Timeout is failure, never evidence that a producer stopped. The
+        # integration retains runtime and refuses finalization on this error.
+        await asyncio.wait_for(self._fact_updates_drained.wait(), SETTING_UPDATE_TIMEOUT)
+
+
+class RealtimeCoordinator(CSGFactCoordinator):
     """Fetch balance and latest published daily usage."""
 
     def __init__(
@@ -871,7 +909,7 @@ class CurrentCoordinator(CSGCoordinator):
         return data
 
 
-class BillingCoordinator(CSGCoordinator):
+class BillingCoordinator(CSGFactCoordinator):
     """Fetch delayed bill data and import corrections into Recorder statistics."""
 
     def __init__(

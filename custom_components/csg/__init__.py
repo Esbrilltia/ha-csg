@@ -85,15 +85,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             await history.async_shutdown()
         except Exception as err:
-            _LOGGER.exception("History cleanup failed; continuing entry cleanup")
+            _LOGGER.exception("History cleanup failed; continuing producer shutdown")
             cleanup_errors.append(err)
     billing = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("billing_coordinator")
     if billing is not None:
         try:
             await billing.async_shutdown()
         except Exception as err:
-            _LOGGER.exception("Billing cleanup failed; continuing platform cleanup")
+            _LOGGER.exception("Billing cleanup failed; continuing producer shutdown")
             cleanup_errors.append(err)
+    realtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("realtime_coordinator")
+    if realtime is not None:
+        try:
+            await realtime.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("Realtime cleanup failed; continuing producer shutdown")
+            cleanup_errors.append(err)
+    if cleanup_errors and bridge is not None and bridge.enabled and not hass.is_stopping:
+        # A failed barrier does not prove the writers quiesced. Keep their
+        # references for a retry; neither final sync nor platform removal is safe.
+        raise cleanup_errors[0]
     if bridge is not None:
         try:
             await bridge.async_shutdown()

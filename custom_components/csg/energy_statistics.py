@@ -38,6 +38,7 @@ _ABS_TOL = 1e-9
 _QUERY_START = dt.datetime.min.replace(tzinfo=dt.UTC)
 _IMPORT_LANES = "csg_energy_import_lanes"
 _CONFIRMATION_TIMEOUT = 30
+_FINALIZATION_TIMEOUT = 60
 
 
 @dataclass
@@ -129,6 +130,7 @@ class EnergyStatisticsBridge:
         self._task: asyncio.Task[None] | None = None
         self._pending = False
         self._shutdown = False
+        self._finalizing = False
         self._accepting = True
         self._owned: set[str] = set()
         self._lanes: dict[str, _ImportLane] = hass.data.setdefault(_IMPORT_LANES, {})
@@ -180,31 +182,63 @@ class EnergyStatisticsBridge:
             self._task = None
 
     async def async_shutdown(self) -> None:
-        """Drain owned imports on reload; preserve ownership on cancellation/error."""
+        """Converge after producer drain, even when no old import is outstanding."""
         self.stop_requests()
+        if self._shutdown:
+            return
         task = self._task
-        outstanding = any(self._lanes[key].target is not None for key in self._owned)
-        if not outstanding or self.hass.is_stopping:
+        if not self.enabled or self.hass.is_stopping:
             self._shutdown = True
             if task is not None and not task.done():
                 task.cancel()
         try:
-            if task is not None:
-                await asyncio.shield(task)
-            elif outstanding and not self._shutdown:
-                # A previous read/Recorder error ended the worker. Retained
-                # lane ownership still gates every future Bridge comparison.
-                await self._async_sync()
+            async with asyncio.timeout(_FINALIZATION_TIMEOUT):
+                if task is not None:
+                    await asyncio.shield(task)
+                if not self._shutdown:
+                    # Producers are quiescent. External admission stays closed;
+                    # this unconditional internal pass ignores pending/ownership
+                    # state and reuses the exact A-1 lane/readback protocol.
+                    self._finalizing = True
+                    task = self._task = self.entry.async_create_background_task(
+                        self.hass, self._async_sync(),
+                        "CSG final external energy statistics", eager_start=False,
+                    )
+                    await asyncio.shield(task)
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():
                 if task is not None:
                     task.cancel()
                 raise
-            if task is None or not task.cancelled():
+            if not self._shutdown or task is None or not task.cancelled():
                 raise
+        except BaseException:
+            if task is not None and not task.done():
+                task.cancel()
+            raise
         finally:
             self._shutdown = True
+            self._finalizing = False
             self._unsubscribe_stop()
+            if task is not None and not task.done():
+                # Give cancellation a turn, never an unbounded join. Store I/O
+                # can drain physical ownership despite cancellation. Retain its
+                # waiter and lane lock until it actually exits; shutdown prevents
+                # it from enqueueing a fresh import after a failed finalization.
+                await asyncio.sleep(0)
+            if task is None or task.done():
+                self._task = None
+            else:
+                task.add_done_callback(self._final_task_done)
+
+    @callback
+    def _final_task_done(self, task: asyncio.Task) -> None:
+        if self._task is task:
+            self._task = None
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
 
     async def _async_actual(self, recorder, statistic_id):
         existing = await recorder.async_add_executor_job(partial(
@@ -253,13 +287,18 @@ class EnergyStatisticsBridge:
             await asyncio.sleep(0.05)
 
     async def _async_sync(self) -> None:
+        require_convergence = self._finalizing
         if not self.enabled or self._shutdown:
             return
         if not await self.history_store.async_ensure_persisted():
+            if require_convergence:
+                raise RuntimeError("Final energy facts are not confirmed durable")
             _LOGGER.warning("CSG energy facts are not confirmed durable; import deferred")
             return
         recorder = get_instance(self.hass)
         if not recorder.async_db_ready.done() or not recorder.async_db_ready.result():
+            if require_convergence:
+                raise RuntimeError("Final energy statistics Recorder database is not ready")
             _LOGGER.warning("CSG energy statistics Recorder database is not ready")
             return
         for value in self.entry.data[CONF_ELE_ACCOUNTS].values():
@@ -277,6 +316,8 @@ class EnergyStatisticsBridge:
                         await self._async_confirm(recorder, lane)
                     while not self._shutdown:
                         if not await self.history_store.async_ensure_persisted():
+                            if require_convergence:
+                                raise RuntimeError("Final energy facts are not confirmed durable")
                             return
                         desired = build_statistics(await self.history_store.async_daily_usage_snapshot(account))
                         existing = await recorder.async_add_executor_job(partial(
@@ -284,6 +325,8 @@ class EnergyStatisticsBridge:
                         ))
                         current_meta = existing[statistic_id][1] if statistic_id in existing else None
                         if current_meta is not None and not _compatible(current_meta, metadata):
+                            if require_convergence:
+                                raise ValueError("Final energy statistics metadata is incompatible")
                             _LOGGER.warning("Incompatible external statistics metadata for %s; skipped", statistic_id)
                             break
                         actual = await recorder.async_add_executor_job(
@@ -304,4 +347,6 @@ class EnergyStatisticsBridge:
                         # Always reread durable Store after confirmation, even
                         # without another request or while ordinary unload drains.
             except Exception:
+                if require_convergence:
+                    raise
                 _LOGGER.warning("CSG external energy statistics unsafe or unavailable for %s; skipped", statistic_id, exc_info=True)
