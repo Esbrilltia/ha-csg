@@ -25,6 +25,7 @@ from custom_components.csg.const import (
     CONF_ENERGY_STATISTICS_ENABLED,
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
+    CONF_TARIFF_PROFILES,
     CONF_UPDATE_INTERVAL,
     DOMAIN,
     SUFFIX_ARR,
@@ -43,6 +44,7 @@ from custom_components.csg.const import (
 )
 from custom_components.csg.csg_client import CSGAPIError, CSGElectricityAccount
 from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg.utils import account_log_id
 from homeassistant.const import CONF_USERNAME, STATE_UNAVAILABLE
 
 
@@ -278,7 +280,7 @@ def test_realtime_published_older_day_still_stops_at_current_month(rig):
     asyncio.run(exercise())
 
 
-def test_billing_ingests_independent_facts_then_reconciles_without_display_changes(rig, monkeypatch):
+def test_billing_ingests_independent_facts_and_displays_official_monthly_snapshot(rig, monkeypatch):
     current = [{"date": "2026-09-01", "kwh": 0}, {"date": "2026-09-02", "kwh": 4}]
     previous = [{"date": "2026-08-31", "kwh": 6}]
     rig.client.daily["account", (2026, 9)] = (99, current)
@@ -302,7 +304,7 @@ def test_billing_ingests_independent_facts_then_reconciles_without_display_chang
             ATTR_KEY_MONTH_BILLING_DELAY: {ATTR_KEY_MONTH_BILLING_DELAY: 2},
             SUFFIX_LATEST_DAY_KWH: 4, SUFFIX_LATEST_DAY_COST: STATE_UNAVAILABLE,
             ATTR_KEY_SETTLEMENT_DATE: {ATTR_KEY_SETTLEMENT_DATE: "2026-09-02"},
-            SUFFIX_LAST_MONTH_KWH: 88, SUFFIX_LAST_MONTH_COST: 12,
+            SUFFIX_LAST_MONTH_KWH: 20, SUFFIX_LAST_MONTH_COST: 12,
             SUFFIX_THIS_YEAR_KWH: 30, SUFFIX_THIS_YEAR_COST: 18,
             SUFFIX_LAST_YEAR_KWH: 0, SUFFIX_LAST_YEAR_COST: 0,
             ATTR_KEY_YEAR_BILLING_DELAY: {ATTR_KEY_YEAR_BILLING_DELAY: "2026-08"},
@@ -427,6 +429,20 @@ def test_billing_january_ingests_previous_december_from_previous_year(rig, monke
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("year_result", [(0, 0, []), CSGAPIError("synthetic unavailable billing")])
+def test_missing_official_month_snapshot_is_not_replaced_with_daily_total(rig, year_result):
+    rig.client.daily["account", (2026, 8)] = (88, [{"date": "2026-08-31", "kwh": 6}])
+    rig.client.years["account", 2026] = year_result
+
+    async def exercise():
+        objects = await rig.build()
+        data = (await objects.billing._async_update_data())["account"]
+        assert data[SUFFIX_LAST_MONTH_KWH] == STATE_UNAVAILABLE
+        assert data[SUFFIX_LAST_MONTH_COST] == STATE_UNAVAILABLE
+        assert objects.history.daily_usage("account", "2026-08-31")["kwh"] == 6
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("coordinator_name", ["realtime", "billing"])
 def test_failed_daily_api_does_not_ingest_a_successful_empty_response(rig, coordinator_name):
     rig.client.daily["account", (2026, 9)] = CSGAPIError("offline")
@@ -448,11 +464,18 @@ def test_current_coordinator_keeps_ladder_without_history_writes(rig):
 
     async def exercise():
         objects = await rig.build()
+        objects.current.entry.data[CONF_SETTINGS][CONF_TARIFF_PROFILES] = {
+            account: {"scheme": "ladder", "multi_person": False, "tou": False}
+            for account in ("account", "other")
+        }
         before = deepcopy(objects.history._data)
         data = await objects.current._async_update_data()
-        assert data["account"] == sensor._ladder_data(sensor._guangzhou_residential_ladder(
-            dt.date(2026, 9, 3), 20, [{"date": "2026-09-02", "kwh": 20}]
-        ))
+        assert data["account"][sensor.SUFFIX_CURRENT_LADDER] == 1
+        assert data["account"][sensor.SUFFIX_CURRENT_LADDER_REMAINING_KWH] == 240
+        assert data["account"][sensor.SUFFIX_CURRENT_LADDER_TARIFF] == 0.58886875
+        assert data["account"][sensor.ATTR_KEY_CURRENT_LADDER_START_DATE] == {
+            sensor.ATTR_KEY_CURRENT_LADDER_START_DATE: None,
+        }
         assert not hasattr(objects.current, "history_store")
         assert objects.history._data == before
         assert rig.client.calls == [("daily", "account", (2026, 9)), ("daily", "other", (2026, 9))]
@@ -521,11 +544,12 @@ def test_monthly_conflict_permutations_and_repeated_refetch_preserve_old_fact(
             ("year", "account", 2026), ("year", "account", 2025)
         ] * 2
         assert any(
-            "account" in record.getMessage()
+            account_log_id("account") in record.getMessage()
             and "2026-08" in record.getMessage()
             and "conflict" in record.getMessage().lower()
             for record in caplog.records
         )
+        assert "conflict for account/" not in caplog.text
 
     asyncio.run(exercise())
 

@@ -6,7 +6,7 @@
       "arrears": {"name": "{account} 欠费"},
       "current_ladder": {"name": "{account} 当前阶梯档位"},
       "current_ladder_remaining": {"name": "{account} 当前阶梯剩余电量"},
-      "current_ladder_tariff": {"name": "{account} 当前阶梯电价"},
+      "current_ladder_tariff": {"name": "{account} 当前单价"},
       "latest_settlement_usage": {"name": "{account} 最近结算日用电量"},
       "latest_settlement_cost": {"name": "{account} 最近结算日电费"},
       "this_month_usage": {"name": "{account} 本月累计用电量"},
@@ -48,11 +48,14 @@
   },
   "options": {
     "step": {
-      "init": {"title": "选择操作", "menu_options": {"add_account": "添加已绑定的缴费号", "settings": "参数设置"}},
+      "init": {"title": "选择操作", "menu_options": {"add_account": "添加已绑定的缴费号", "settings": "参数设置", "tariff_account": "配置当前电价"}},
       "add_account": {"title": "选择缴费号"},
-      "settings": {"title": "参数设置", "data_description": {"history_start_month": "允许获取历史事实的最早月份；留空可关闭新的历史同步。", "energy_statistics_enabled": "将已持久化的真实日电量发布为正式能源消耗来源。默认启用，已有配置缺少字段时也启用；明确关闭后停止访问 Recorder 并保留已有统计。请在能源面板中手动切换来源，同一账户不要同时配置旧、新消费来源。"}, "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间", "history_start_month": "历史同步起始月份（YYYY-MM）", "energy_statistics_enabled": "启用外部能源统计"}}
+      "settings": {"title": "参数设置", "data_description": {"history_start_month": "允许获取历史事实的最早月份；留空可关闭新的历史同步。", "energy_statistics_enabled": "将已持久化的真实日电量和已关闭月份的正式月账发布为外部统计；费用要求 HA 全局币种为 CNY。默认启用，已有配置缺少字段时也启用；明确关闭后停止访问 Recorder 并保留已有统计。请在能源面板手动配对电量和费用，同一账户不要同时配置旧、新消费来源。"}, "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间", "history_start_month": "历史同步起始月份（YYYY-MM）", "energy_statistics_enabled": "启用外部电量与费用统计"}},
+      "tariff_account": {"title": "选择广州缴费号", "description": "当前仅支持广州电价政策，其他地区保持未配置。", "data": {"account_number": "缴费号"}},
+      "tariff_profile": {"title": "{account} 当前电价", "description": "请选择已在南网登记的计费政策。此配置仅影响当前单价和阶梯展示；正式月账费用不依赖该配置，也不会用它反算历史电费。合表必须关闭两个附加选项；7 人及以上已登记合表计费的家庭请直接选择合表。", "data": {"scheme": "计费方式", "multi_person": "已登记一户多人口优惠", "tou": "已登记峰谷分时计费"}}
     },
-    "error": {"invalid_history_start_month": "请输入有效的日历月份（YYYY-MM），或留空以关闭历史同步。"},
-    "abort": {"no_account": "账户未绑定缴费号", "all_added": "没有可添加到此集成的缴费号"}
-  }
+    "error": {"invalid_history_start_month": "请输入有效的日历月份（YYYY-MM），或留空以关闭历史同步。", "invalid_tariff_account": "请选择支持的广州缴费号。", "invalid_tariff_profile": "请选择支持的组合；合表和未配置都要求关闭两个附加选项。"},
+    "abort": {"no_account": "账户未绑定缴费号", "all_added": "没有可添加到此集成的缴费号", "no_supported_tariff_accounts": "尚未添加广州缴费号，其他地区保持未配置。"}
+  },
+  "selector": {"tariff_scheme": {"options": {"unconfigured": "未配置", "ladder": "居民阶梯", "combined": "合表"}}}
 }

@@ -14,12 +14,12 @@ from zoneinfo import ZoneInfo
 import requests
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_USERNAME, STATE_UNAVAILABLE, UnitOfEnergy
+from homeassistant.const import STATE_UNAVAILABLE, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval, async_track_utc_time_change
 from homeassistant.components import persistent_notification
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.update_coordinator import (
@@ -37,6 +37,7 @@ from .const import (
     CONF_BILLING_UPDATE_TIME,
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
+    CONF_TARIFF_PROFILES,
     CONF_UPDATE_INTERVAL,
     DOMAIN,
     SETTING_UPDATE_TIMEOUT,
@@ -77,17 +78,15 @@ from .energy_statistics import EnergyStatisticsBridge
 from .history_helpers import (
     collect_monthly_bill_candidates as _collect_monthly_bill_candidates,
 )
+from .tariff import TariffProfile, current_ladder, resolve_tariff_profile
+from .utils import account_log_id
 
 _LOGGER = logging.getLogger(__name__)
 _BILLING_DELAY = 2
 _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 _KEY_YESTERDAY_DATE = "_yesterday_usage_date"
-
-# Guangzhou residential single-household tariff.
-# This installation has no multi-person allowance or time-of-use tariff.
-_GZ_BASE_TARIFF = 0.58886875
-_GZ_TIER2_TARIFF = _GZ_BASE_TARIFF + 0.05
-_GZ_TIER3_TARIFF = _GZ_BASE_TARIFF + 0.30
+_KEY_TARIFF_MONTH = "_tariff_usage_month"
+_KEY_TARIFF_ATTRIBUTES = "_tariff_attributes"
 FETCH_EXCEPTIONS = (CSGAPIError, asyncio.TimeoutError, ValueError, requests.RequestException)
 
 
@@ -112,7 +111,7 @@ REALTIME_DESCRIPTIONS = (
 CURRENT_DESCRIPTIONS = (
     SensorDescription(SUFFIX_CURRENT_LADDER, "current_ladder", icon="mdi:stairs", attributes_key=ATTR_KEY_CURRENT_LADDER_START_DATE),
     SensorDescription(SUFFIX_CURRENT_LADDER_REMAINING_KWH, "current_ladder_remaining", SensorDeviceClass.ENERGY, UnitOfEnergy.KILO_WATT_HOUR, SensorStateClass.MEASUREMENT, "mdi:lightning-bolt-circle"),
-    SensorDescription(SUFFIX_CURRENT_LADDER_TARIFF, "current_ladder_tariff", SensorDeviceClass.MONETARY, "CNY", SensorStateClass.MEASUREMENT, "mdi:currency-cny"),
+    SensorDescription(SUFFIX_CURRENT_LADDER_TARIFF, "current_ladder_tariff", unit="CNY/kWh", state_class=SensorStateClass.MEASUREMENT, icon="mdi:currency-cny", attributes_key=_KEY_TARIFF_ATTRIBUTES),
 )
 BILLING_DESCRIPTIONS = (
     SensorDescription(SUFFIX_LATEST_DAY_KWH, "latest_settlement_usage", SensorDeviceClass.ENERGY, UnitOfEnergy.KILO_WATT_HOUR, SensorStateClass.MEASUREMENT, "mdi:calendar-check", ATTR_KEY_SETTLEMENT_DATE),
@@ -172,6 +171,7 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
         self._attributes_key = description.attributes_key
         self._value_present = False
         self._unsub_yesterday_guard = None
+        self._unsub_tariff_boundary = None
         self._update_from_coordinator()
 
     async def async_added_to_hass(self) -> None:
@@ -184,12 +184,24 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
                 self._handle_yesterday_guard_tick,
                 timedelta(minutes=1),
             )
+        if self._description.suffix == SUFFIX_CURRENT_LADDER_TARIFF and isinstance(self.coordinator, CurrentCoordinator):
+            profile = self.coordinator.tariff_profile(self._account)
+            if profile is not None and profile.tou_enabled:
+                # Shanghai has no DST. These UTC hours are precisely local
+                # 08, 10, 12, 14, 19 and 00, regardless of HA's display zone.
+                self._unsub_tariff_boundary = async_track_utc_time_change(
+                    self.hass, self._handle_tariff_boundary,
+                    hour=[0, 2, 4, 6, 11, 16], minute=0, second=0,
+                )
 
     async def async_will_remove_from_hass(self) -> None:
         """Stop local refresh timers when the entity is removed."""
         if self._unsub_yesterday_guard:
             self._unsub_yesterday_guard()
             self._unsub_yesterday_guard = None
+        if self._unsub_tariff_boundary:
+            self._unsub_tariff_boundary()
+            self._unsub_tariff_boundary = None
 
         await super().async_will_remove_from_hass()
 
@@ -200,6 +212,12 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
         _now: dt.datetime,
     ) -> None:
         """Invalidate yesterday usage after the CSG calendar day changes."""
+        self._update_from_coordinator()
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_tariff_boundary(self, _now: dt.datetime) -> None:
+        """Refresh the current unit price from cached usage, without cloud I/O."""
         self._update_from_coordinator()
         self.async_write_ha_state()
 
@@ -228,6 +246,8 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
         account_data = coordinator_data.get(self._account, {})
 
         value = account_data.get(self._description.suffix)
+        if self._description.suffix == SUFFIX_CURRENT_LADDER_TARIFF and isinstance(self.coordinator, CurrentCoordinator):
+            value = self.coordinator.current_tariff(self._account)
 
         if (
             value is not None
@@ -290,7 +310,7 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
             raise
         except FETCH_EXCEPTIONS as err:
             self._notify_failure("all", "connection", err)
-            raise UpdateFailed(f"Unable to initialize CSG client: {err}") from err
+            raise UpdateFailed(f"Unable to initialize CSG client: {type(err).__name__}") from err
         self._clear_failure("all", "connection")
         return client
 
@@ -386,7 +406,7 @@ class RealtimeCoordinator(CSGFactCoordinator):
         super().__init__(
             hass,
             entry,
-            f"CSG realtime {entry.data[CONF_USERNAME]}",
+            f"CSG realtime {entry.entry_id}",
         )
         self.history_store = history_store
         self.energy_statistics_bridge = bridge
@@ -433,8 +453,8 @@ class RealtimeCoordinator(CSGFactCoordinator):
             except FETCH_EXCEPTIONS as err:
                 _LOGGER.warning(
                     "Could not update balance for %s: %s",
-                    account.account_number,
-                    err,
+                    account_log_id(account.account_number),
+                    type(err).__name__,
                 )
                 account_data.update(
                     {
@@ -461,10 +481,10 @@ class RealtimeCoordinator(CSGFactCoordinator):
                 except FETCH_EXCEPTIONS as err:
                     _LOGGER.warning(
                         "Could not update daily usage for %s/%s-%02d: %s",
-                        account.account_number,
+                        account_log_id(account.account_number),
                         year,
                         month,
-                        err,
+                        type(err).__name__,
                     )
                     usage_failed = True
                     self._notify_failure(
@@ -523,7 +543,7 @@ class RealtimeCoordinator(CSGFactCoordinator):
 
 
 class CurrentCoordinator(CSGCoordinator):
-    """Calculate current Guangzhou residential ladder from current-month usage."""
+    """Show current tariff capability only for an explicitly selected policy."""
 
     def __init__(
         self,
@@ -533,60 +553,78 @@ class CurrentCoordinator(CSGCoordinator):
         super().__init__(
             hass,
             entry,
-            f"CSG current {entry.data[CONF_USERNAME]}",
+            f"CSG current {entry.entry_id}",
         )
 
+    def tariff_profile(self, account_number: str) -> TariffProfile | None:
+        selections = self.entry.data.get(CONF_SETTINGS, {}).get(CONF_TARIFF_PROFILES, {})
+        for account in self._accounts():
+            if account.account_number == account_number:
+                selection = selections.get(account_number) if isinstance(selections, Mapping) else None
+                return resolve_tariff_profile(account.area_code, selection)
+        return None
+
+    def current_tariff(self, account_number: str) -> float | str:
+        """Re-evaluate TOU time locally; a previous month's tier is never reused."""
+        profile = self.tariff_profile(account_number)
+        if profile is None:
+            return STATE_UNAVAILABLE
+        now = _csg_now()
+        account_data = (self.data or {}).get(account_number, {})
+        if profile.ladder_enabled and account_data.get(_KEY_TARIFF_MONTH) != now.date().isoformat()[:7]:
+            return STATE_UNAVAILABLE
+        tier = account_data.get(SUFFIX_CURRENT_LADDER)
+        rate = profile.current_rate(tier, now)
+        return float(rate) if rate is not None else STATE_UNAVAILABLE
+
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
-        client = await self._client()
+        client = None
         today = _csg_today()
         data: dict[str, dict[str, Any]] = {}
 
         for account in self._accounts():
-            # This local calculation is intentionally limited to the
-            # Guangzhou account/rules verified for this installation.
-            if account.area_code != "080000":
-                data[account.account_number] = {
-                    suffix: STATE_UNAVAILABLE
-                    for suffix in (
-                        SUFFIX_CURRENT_LADDER,
-                        SUFFIX_CURRENT_LADDER_REMAINING_KWH,
-                        SUFFIX_CURRENT_LADDER_TARIFF,
-                    )
-                }
+            profile = self.tariff_profile(account.account_number)
+            account_data = data[account.account_number] = _ladder_data({})
+            if profile is None:
+                continue
+            account_data[_KEY_TARIFF_ATTRIBUTES] = {
+                "tariff_profile": profile.profile_id,
+                "billing_period": profile.billing_period,
+                "multi_person_allowance_kwh": float(profile.multi_person_allowance),
+                "tou_enabled": profile.tou_enabled,
+                "effective_from": profile.effective_from.isoformat(),
+                "policy_sources": list(profile.source),
+            }
+            if not profile.ladder_enabled:
+                account_data[SUFFIX_CURRENT_LADDER_TARIFF] = float(profile.current_rate(None, _csg_now()))
                 continue
 
             try:
+                if client is None:
+                    client = await self._client()
                 usage_total, usage_days = await self._fetch(
                     client.get_month_daily_usage_detail,
                     account,
                     (today.year, today.month),
                 )
 
-                ladder = _guangzhou_residential_ladder(
-                    today,
-                    usage_total,
-                    usage_days,
-                )
-
-                data[account.account_number] = _ladder_data(ladder)
+                ladder = current_ladder(profile, today, usage_total, usage_days)
+                account_data.update(_ladder_data({
+                    WF_ATTR_LADDER: ladder.tier,
+                    WF_ATTR_LADDER_REMAINING_KWH: float(ladder.remaining_kwh) if ladder.remaining_kwh is not None else STATE_UNAVAILABLE,
+                    WF_ATTR_LADDER_TARIFF: float(profile.current_rate(ladder.tier, _csg_now())),
+                    WF_ATTR_LADDER_START_DATE: ladder.start_date,
+                }))
+                account_data[_KEY_TARIFF_MONTH] = today.isoformat()[:7]
 
                 self._clear_failure(account.account_number, "ladder")
 
             except FETCH_EXCEPTIONS as err:
                 _LOGGER.warning(
-                    "Could not calculate ladder for %s: %s",
-                    account.account_number,
-                    err,
+                    "Could not calculate ladder for tariff profile %s: %s",
+                    profile.profile_id,
+                    type(err).__name__,
                 )
-
-                data[account.account_number] = {
-                    suffix: STATE_UNAVAILABLE
-                    for suffix in (
-                        SUFFIX_CURRENT_LADDER,
-                        SUFFIX_CURRENT_LADDER_REMAINING_KWH,
-                        SUFFIX_CURRENT_LADDER_TARIFF,
-                    )
-                }
 
                 self._notify_failure(
                     account.account_number,
@@ -607,7 +645,7 @@ class BillingCoordinator(CSGFactCoordinator):
         history_store: CSGHistoryStore,
         bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
-        super().__init__(hass, entry, f"CSG billing {entry.data[CONF_USERNAME]}")
+        super().__init__(hass, entry, f"CSG billing {entry.entry_id}")
         self.history_store = history_store
         self.energy_statistics_bridge = bridge
         self.update_interval = None
@@ -662,7 +700,10 @@ class BillingCoordinator(CSGFactCoordinator):
         account: CSGElectricityAccount,
         months: list[tuple[int, int]],
     ) -> dict[str, Any]:
-        data: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            SUFFIX_LAST_MONTH_KWH: STATE_UNAVAILABLE,
+            SUFFIX_LAST_MONTH_COST: STATE_UNAVAILABLE,
+        }
         current_month = None
         last_month = None
         usage_failed = False
@@ -682,10 +723,10 @@ class BillingCoordinator(CSGFactCoordinator):
             except FETCH_EXCEPTIONS as err:
                 _LOGGER.warning(
                     "Could not update usage for %s/%s-%02d: %s",
-                    account.account_number,
+                    account_log_id(account.account_number),
                     year,
                     month,
-                    err,
+                    type(err).__name__,
                 )
                 usage_failed = True
                 self._notify_failure(
@@ -761,30 +802,11 @@ class BillingCoordinator(CSGFactCoordinator):
             )
 
         if last_month:
-            last_usage, last_cost = last_month[:2]
-
-            data[SUFFIX_LAST_MONTH_KWH] = (
-                last_usage
-                if last_usage is not None
-                else STATE_UNAVAILABLE
-            )
-            data[SUFFIX_LAST_MONTH_COST] = (
-                last_cost
-                if last_cost is not None
-                else STATE_UNAVAILABLE
-            )
-
             if not has_current_settlement_day:
                 _set_latest_day(data, last_month[2])
 
-        else:
-            data.update(
-                {
-                    SUFFIX_LAST_MONTH_KWH: STATE_UNAVAILABLE,
-                    SUFFIX_LAST_MONTH_COST: STATE_UNAVAILABLE,
-                }
-            )
-
+        # Closed-month snapshots come only from the official billing response;
+        # a daily usage total must not stand in for a missing official bill.
         await self._add_year_data(client, account, data)
         for month in months:
             await _async_write_history(
@@ -828,7 +850,7 @@ class BillingCoordinator(CSGFactCoordinator):
                 for month, values in _collect_monthly_bill_candidates(
                     by_month, account.account_number, year
                 ).items():
-                    await _async_write_history(
+                    changed = await _async_write_history(
                         self.history_store.async_upsert_monthly_bill(
                             account.account_number,
                             month,
@@ -836,6 +858,8 @@ class BillingCoordinator(CSGFactCoordinator):
                             cost_cny=values[1],
                         )
                     )
+                    if changed and self.energy_statistics_bridge is not None:
+                        self.energy_statistics_bridge.request_sync()
 
                 for month_data in by_month:
                     if not isinstance(month_data, Mapping):
@@ -845,6 +869,10 @@ class BillingCoordinator(CSGFactCoordinator):
                     ).replace("-", "")
 
                     if month_key == previous_month_key:
+                        data[SUFFIX_LAST_MONTH_KWH] = month_data.get(
+                            WF_ATTR_KWH,
+                            STATE_UNAVAILABLE,
+                        )
                         data[SUFFIX_LAST_MONTH_COST] = month_data.get(
                             WF_ATTR_CHARGE,
                             STATE_UNAVAILABLE,
@@ -863,89 +891,31 @@ class BillingCoordinator(CSGFactCoordinator):
             except FETCH_EXCEPTIONS as err:
                 _LOGGER.warning(
                     "Could not update year billing for %s/%s: %s",
-                    account.account_number,
+                    account_log_id(account.account_number),
                     year,
-                    err,
+                    type(err).__name__,
                 )
                 data[usage_suffix] = STATE_UNAVAILABLE
                 data[cost_suffix] = STATE_UNAVAILABLE
 
 
-async def _async_write_history(operation: Awaitable[Any]) -> None:
+async def _async_write_history(operation: Awaitable[Any]) -> Any:
     """Keep official snapshots available when history persistence fails."""
     try:
-        await operation
+        return await operation
     except Exception:
         _LOGGER.exception("HistoryStore write failed; continuing snapshot update")
 
 
 def _csg_today() -> dt.date:
     """Return the current calendar date used by the CSG API."""
-    return dt_util.utcnow().astimezone(_CSG_TIME_ZONE).date()
+    return _csg_now().date()
 
 
-def _guangzhou_residential_ladder(
-    today: dt.date,
-    usage_total: float,
-    usage_days: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Calculate Guangzhou residential ladder for a normal single household."""
-    usage = float(usage_total)
+def _csg_now() -> dt.datetime:
+    return dt_util.utcnow().astimezone(_CSG_TIME_ZONE)
 
-    if 5 <= today.month <= 10:
-        first_limit = 260.0
-        second_limit = 600.0
-    else:
-        first_limit = 200.0
-        second_limit = 400.0
 
-    if usage <= first_limit:
-        ladder = 1
-        tariff = _GZ_BASE_TARIFF
-        remaining: Any = round(max(0.0, first_limit - usage), 2)
-        threshold = 0.0
-    elif usage <= second_limit:
-        ladder = 2
-        tariff = _GZ_TIER2_TARIFF
-        remaining = round(max(0.0, second_limit - usage), 2)
-        threshold = first_limit
-    else:
-        ladder = 3
-        tariff = _GZ_TIER3_TARIFF
-        remaining = STATE_UNAVAILABLE
-        threshold = second_limit
-
-    # First tier begins on the first day of the month.
-    # For higher tiers, derive the first published day on which the threshold
-    # was exceeded from the daily usage data.
-    start_date: str | None = today.replace(day=1).isoformat()
-
-    if ladder > 1:
-        cumulative = 0.0
-        start_date = None
-
-        for item in sorted(
-            usage_days,
-            key=lambda item: str(item.get(WF_ATTR_DATE, "")),
-        ):
-            day = item.get(WF_ATTR_DATE)
-            day_usage = item.get(WF_ATTR_KWH)
-
-            if day is None or day_usage is None:
-                continue
-
-            cumulative += float(day_usage)
-
-            if cumulative > threshold:
-                start_date = str(day)
-                break
-
-    return {
-        WF_ATTR_LADDER: ladder,
-        WF_ATTR_LADDER_REMAINING_KWH: remaining,
-        WF_ATTR_LADDER_TARIFF: tariff,
-        WF_ATTR_LADDER_START_DATE: start_date,
-    }
 def _ladder_data(ladder: dict[str, Any]) -> dict[str, Any]:
     return {
         SUFFIX_CURRENT_LADDER: ladder.get(WF_ATTR_LADDER, STATE_UNAVAILABLE),

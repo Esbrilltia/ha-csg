@@ -15,6 +15,10 @@ from homeassistant.const import STATE_UNAVAILABLE
 from custom_components.csg.const import (
     ATTR_KEY_CURRENT_LADDER_START_DATE,
     ATTR_KEY_SETTLEMENT_DATE,
+    CONF_SETTINGS,
+    CONF_TARIFF_PROFILES,
+    SUFFIX_CURRENT_LADDER,
+    SUFFIX_CURRENT_LADDER_REMAINING_KWH,
     SUFFIX_LATEST_DAY_KWH,
     SUFFIX_YESTERDAY_KWH,
 )
@@ -62,6 +66,10 @@ def make_coordinator(kind, client, history=None):
     coordinator._fetch = fetch
     coordinator._clear_failure = lambda *args: None
     coordinator._notify_failure = lambda *args: pytest.fail("Unexpected API failure")
+    if kind is CurrentCoordinator:
+        coordinator.entry = SimpleNamespace(data={CONF_SETTINGS: {CONF_TARIFF_PROFILES: {
+            ACCOUNT.account_number: {"scheme": "ladder", "multi_person": False, "tou": False},
+        }}})
     if kind in (RealtimeCoordinator, BillingCoordinator):
         coordinator.history_store = history or make_store()
         coordinator.energy_statistics_bridge = None
@@ -197,5 +205,7 @@ def test_invalid_daily_values_do_not_enter_ladder_accumulation(power):
     current = make_coordinator(CurrentCoordinator, client)
     data = run(current._async_update_data())
     assert data[ACCOUNT.account_number][ATTR_KEY_CURRENT_LADDER_START_DATE] == {
-        ATTR_KEY_CURRENT_LADDER_START_DATE: "2026-08-02"
+        ATTR_KEY_CURRENT_LADDER_START_DATE: None
     }
+    assert data[ACCOUNT.account_number][SUFFIX_CURRENT_LADDER] == 2
+    assert data[ACCOUNT.account_number][SUFFIX_CURRENT_LADDER_REMAINING_KWH] == 330

@@ -231,10 +231,8 @@ class CSGClient:
         can automatically add authentication header(s)
         """
         _LOGGER.debug(
-            "_make_request: %s, data=%s, auth=%s, method=%s",
+            "_make_request: %s, method=%s",
             path,
-            payload,
-            with_auth,
             method,
         )
         url = base_path + path
@@ -261,9 +259,8 @@ class CSGClient:
             json_data = json.loads(json_str)
             response_data = json_data
             _LOGGER.debug(
-                "_make_request: %s, response: %s",
+                "_make_request: %s, response received",
                 path,
-                json.dumps(response_data, ensure_ascii=False),
             )
 
             # headers need to be returned since they may contain additional data
@@ -274,10 +271,8 @@ class CSGClient:
     def _handle_unsuccessful_response(self, api_path: str, response_data: dict):
         """Handles sta=!RESP_STA_SUCCESS"""
         _LOGGER.debug(
-            "Account customer number: %s, unsuccessful response while calling %s: %s",
-            self.customer_number,
+            "Unsuccessful API response while calling %s",
             api_path,
-            response_data,
         )
 
         if response_data[JSON_KEY_STA] == RESP_STA_NO_LOGIN:

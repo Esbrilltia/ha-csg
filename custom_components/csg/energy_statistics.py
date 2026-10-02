@@ -1,4 +1,4 @@
-"""Converge durable CSG daily facts into Recorder external energy statistics."""
+"""Converge durable CSG daily usage and official monthly cost into Recorder."""
 
 from __future__ import annotations
 
@@ -25,9 +25,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util.unit_conversion import EnergyConverter
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, DEFAULT_ENERGY_STATISTICS_ENABLED, DOMAIN
 from .csg_client import CSGElectricityAccount
+from .cost_statistics import build_cost_statistics, cost_statistic_metadata
 from .history_store import CSGHistoryStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,6 +41,17 @@ _QUERY_START = dt.datetime.min.replace(tzinfo=dt.UTC)
 _IMPORT_LANES = "csg_energy_import_lanes"
 _CONFIRMATION_TIMEOUT = 30
 _FINALIZATION_TIMEOUT = 60
+
+
+def _statistic_units(statistic_id: str) -> dict[str, str] | None:
+    """Cost has no unit conversion; energy retains its existing kWh semantics."""
+    if statistic_id.startswith(f"{DOMAIN}:cost_"):
+        return None
+    return {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR}
+
+
+def _csg_today() -> dt.date:
+    return dt_util.utcnow().astimezone(_CSG_TIME_ZONE).date()
 
 
 @dataclass
@@ -106,7 +119,7 @@ def _different_suffix(
         if not all(_number(value) for value in (start, state, cumulative)):
             raise ValueError("Malformed Recorder row")
         if start not in expected:
-            raise ValueError("Recorder has a row without a corresponding daily fact")
+            raise ValueError("Recorder has a row without a corresponding source fact")
         if start in indexed:
             raise ValueError("Duplicate Recorder start")
         indexed[start] = row
@@ -133,6 +146,7 @@ class EnergyStatisticsBridge:
         self._finalizing = False
         self._accepting = True
         self._owned: set[str] = set()
+        self._currency_warned = False
         self._lanes: dict[str, _ImportLane] = hass.data.setdefault(_IMPORT_LANES, {})
         self._unsubscribe = None
         if self.enabled:
@@ -167,7 +181,7 @@ class EnergyStatisticsBridge:
         self._pending = True
         if self._task is None or self._task.done():
             self._task = self.entry.async_create_background_task(
-                self.hass, self._async_run(), "CSG external energy statistics", eager_start=False,
+                self.hass, self._async_run(), "CSG external statistics", eager_start=False,
             )
 
     async def _async_run(self) -> None:
@@ -177,7 +191,7 @@ class EnergyStatisticsBridge:
                 try:
                     await self._async_sync()
                 except Exception:
-                    _LOGGER.warning("CSG energy statistics pass unavailable", exc_info=True)
+                    _LOGGER.warning("CSG external statistics pass unavailable", exc_info=True)
         finally:
             self._task = None
 
@@ -241,16 +255,33 @@ class EnergyStatisticsBridge:
             pass
 
     async def _async_actual(self, recorder, statistic_id):
+        self._require_cost_currency(statistic_id)
         existing = await recorder.async_add_executor_job(partial(
             get_metadata, self.hass, statistic_ids={statistic_id},
         ))
         metadata = existing[statistic_id][1] if statistic_id in existing else None
+        self._require_cost_currency(statistic_id)
         actual = await recorder.async_add_executor_job(
             statistics_during_period, self.hass, _QUERY_START, None,
-            {statistic_id}, "hour", {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR},
+            {statistic_id}, "hour", _statistic_units(statistic_id),
             {"state", "sum"},
         )
         return metadata, actual.get(statistic_id, [])
+
+    def _cost_allowed(self) -> bool:
+        if getattr(getattr(self.hass, "config", None), "currency", None) == "CNY":
+            return True
+        if not self._currency_warned:
+            self._currency_warned = True
+            _LOGGER.warning(
+                "CSG official costs are CNY; external cost statistics require HA currency CNY. "
+                "Cost access is paused and existing statistics are retained; reload after changing currency",
+            )
+        return False
+
+    def _require_cost_currency(self, statistic_id: str) -> None:
+        if statistic_id.startswith(f"{DOMAIN}:cost_") and not self._cost_allowed():
+            raise RuntimeError("CNY cost statistics access is paused")
 
     async def _async_confirm(self, recorder, lane: _ImportLane) -> None:
         """Read back the differing import target, never just the latest Store.
@@ -290,63 +321,82 @@ class EnergyStatisticsBridge:
         require_convergence = self._finalizing
         if not self.enabled or self._shutdown:
             return
+        cost_enabled = self._cost_allowed()
         if not await self.history_store.async_ensure_persisted():
             if require_convergence:
-                raise RuntimeError("Final energy facts are not confirmed durable")
-            _LOGGER.warning("CSG energy facts are not confirmed durable; import deferred")
+                raise RuntimeError("Final facts are not confirmed durable")
+            _LOGGER.warning("CSG facts are not confirmed durable; import deferred")
             return
         recorder = get_instance(self.hass)
         if not recorder.async_db_ready.done() or not recorder.async_db_ready.result():
             if require_convergence:
-                raise RuntimeError("Final energy statistics Recorder database is not ready")
-            _LOGGER.warning("CSG energy statistics Recorder database is not ready")
+                raise RuntimeError("Final external statistics Recorder database is not ready")
+            _LOGGER.warning("CSG external statistics Recorder database is not ready")
             return
         for value in self.entry.data[CONF_ELE_ACCOUNTS].values():
             # The stored account object's number is the identity, rather than
             # entry_id or a display label in the config-entry mapping.
             account = CSGElectricityAccount.load(value).account_number
-            metadata = statistic_metadata(account)
-            statistic_id = metadata["statistic_id"]
-            try:
-                lane = self._lanes.setdefault(statistic_id, _ImportLane())
-                async with lane.lock:
-                    # A new/reloaded Bridge inherits any unconfirmed old target
-                    # before it is allowed to compare against its latest Store.
-                    if lane.target is not None:
-                        await self._async_confirm(recorder, lane)
-                    while not self._shutdown:
-                        if not await self.history_store.async_ensure_persisted():
-                            if require_convergence:
-                                raise RuntimeError("Final energy facts are not confirmed durable")
-                            return
-                        desired = build_statistics(await self.history_store.async_daily_usage_snapshot(account))
-                        existing = await recorder.async_add_executor_job(partial(
-                            get_metadata, self.hass, statistic_ids={statistic_id},
-                        ))
-                        current_meta = existing[statistic_id][1] if statistic_id in existing else None
-                        if current_meta is not None and not _compatible(current_meta, metadata):
-                            if require_convergence:
-                                raise ValueError("Final energy statistics metadata is incompatible")
-                            _LOGGER.warning("Incompatible external statistics metadata for %s; skipped", statistic_id)
-                            break
-                        actual = await recorder.async_add_executor_job(
-                            statistics_during_period, self.hass, _QUERY_START, None,
-                            {statistic_id}, "hour", {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR},
-                            {"state", "sum"},
+            targets = [statistic_metadata(account)]
+            if cost_enabled:
+                targets.append(cost_statistic_metadata(account))
+            for metadata in targets:
+                await self._async_sync_statistic(recorder, account, metadata, require_convergence)
+
+    async def _async_sync_statistic(
+        self, recorder, account: str, metadata: StatisticMetaData, require_convergence: bool,
+    ) -> None:
+        """Reuse the audited lane/readback protocol independently for each ID."""
+        statistic_id = metadata["statistic_id"]
+        try:
+            lane = self._lanes.setdefault(statistic_id, _ImportLane())
+            async with lane.lock:
+                # A new/reloaded Bridge inherits any unconfirmed old target
+                # before it is allowed to compare against its latest Store.
+                if lane.target is not None:
+                    await self._async_confirm(recorder, lane)
+                while not self._shutdown:
+                    if not await self.history_store.async_ensure_persisted():
+                        if require_convergence:
+                            raise RuntimeError("Final facts are not confirmed durable")
+                        return
+                    if statistic_id.startswith(f"{DOMAIN}:cost_"):
+                        desired = build_cost_statistics(
+                            await self.history_store.async_monthly_bills_snapshot(account),
+                            _csg_today(),
                         )
-                        suffix = _different_suffix(desired, actual.get(statistic_id, []))
-                        if self._shutdown:
-                            return
-                        if not suffix and (current_meta is None or current_meta.get("name") == metadata["name"]):
-                            break
-                        async_add_external_statistics(self.hass, metadata, suffix)
-                        # No await between public enqueue and ownership capture.
-                        lane.target = (metadata, desired)
-                        self._owned.add(statistic_id)
-                        await self._async_confirm(recorder, lane)
-                        # Always reread durable Store after confirmation, even
-                        # without another request or while ordinary unload drains.
-            except Exception:
-                if require_convergence:
-                    raise
-                _LOGGER.warning("CSG external energy statistics unsafe or unavailable for %s; skipped", statistic_id, exc_info=True)
+                    else:
+                        desired = build_statistics(await self.history_store.async_daily_usage_snapshot(account))
+                    self._require_cost_currency(statistic_id)
+                    existing = await recorder.async_add_executor_job(partial(
+                        get_metadata, self.hass, statistic_ids={statistic_id},
+                    ))
+                    current_meta = existing[statistic_id][1] if statistic_id in existing else None
+                    if current_meta is not None and not _compatible(current_meta, metadata):
+                        if require_convergence:
+                            raise ValueError("Final statistics metadata is incompatible")
+                        _LOGGER.warning("Incompatible external statistics metadata for %s; skipped", statistic_id)
+                        break
+                    self._require_cost_currency(statistic_id)
+                    actual = await recorder.async_add_executor_job(
+                        statistics_during_period, self.hass, _QUERY_START, None,
+                        {statistic_id}, "hour", _statistic_units(statistic_id),
+                        {"state", "sum"},
+                    )
+                    suffix = _different_suffix(desired, actual.get(statistic_id, []))
+                    if self._shutdown:
+                        return
+                    if not suffix and (current_meta is None or current_meta.get("name") == metadata["name"]):
+                        break
+                    self._require_cost_currency(statistic_id)
+                    async_add_external_statistics(self.hass, metadata, suffix)
+                    # No await between public enqueue and ownership capture.
+                    lane.target = (metadata, desired)
+                    self._owned.add(statistic_id)
+                    await self._async_confirm(recorder, lane)
+                    # Always reread durable Store after confirmation, even
+                    # without another request or while ordinary unload drains.
+        except Exception:
+            if require_convergence:
+                raise
+            _LOGGER.warning("CSG external statistics unsafe or unavailable for %s; skipped", statistic_id, exc_info=True)

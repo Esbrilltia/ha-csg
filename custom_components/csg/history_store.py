@@ -22,6 +22,7 @@ from .const import DOMAIN
 from .csg_client import WF_ATTR_DATE, WF_ATTR_KWH
 from .history_helpers import parse_history_start_month
 from .history_io import HistoryStorageHass
+from .utils import account_log_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class CSGHistoryStore:
             ):
                 _LOGGER.warning(
                     "Conflicting daily usage values for %s on %s; skipped date",
-                    account,
+                    account_log_id(account),
                     day_key,
                 )
                 continue
@@ -341,6 +342,13 @@ class CSGHistoryStore:
                 raise HomeAssistantError("Daily usage snapshot is not confirmed durable")
             return deepcopy(self._data["accounts"].get(account, {}).get("daily_usage", {}))
 
+    async def async_monthly_bills_snapshot(self, account: str) -> dict[str, dict[str, Any]]:
+        """Return detached official bills with the daily snapshot's durable gate."""
+        async with self._lock:
+            if self._persistence_pending:
+                raise HomeAssistantError("Monthly bills snapshot is not confirmed durable")
+            return deepcopy(self._data["accounts"].get(account, {}).get("monthly_bills", {}))
+
     def history_progress(self, account: str) -> dict[str, Any]:
         """Return confirmed checkpoints only, detached from the mutable payload."""
         sync = self._account(account).get("sync")
@@ -556,7 +564,7 @@ def _validated_day_key(
     try:
         day = dt.date.fromisoformat(str(value))
     except ValueError:
-        _LOGGER.warning("Skipped malformed daily usage date: %r", value)
+        _LOGGER.warning("Skipped malformed daily usage date")
         return None
     if day.year != year or day.month != month_number:
         _LOGGER.warning(
