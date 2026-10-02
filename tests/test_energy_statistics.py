@@ -7,7 +7,7 @@ import datetime as dt
 from copy import deepcopy
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -121,6 +121,7 @@ def rig(monkeypatch):
             self.fail_ids = set()
             self.read_started = None
             self.read_release = None
+            self.stop_requested = False
 
         async def async_add_executor_job(self, function, *args):
             if isinstance(function, partial):
@@ -145,14 +146,18 @@ def rig(monkeypatch):
         def add(self, hass, metadata, rows):
             self.imports.append((deepcopy(metadata), deepcopy(rows)))
 
-        def commit(self):
+        async def async_block_till_done(self):
+            self.commit(clear=False)
+
+        def commit(self, clear=True):
             for metadata, rows in self.imports:
                 statistic_id = metadata["statistic_id"]
                 self.metadata[statistic_id] = deepcopy(metadata)
                 existing = {row["start"]: row for row in self.rows.get(statistic_id, [])}
                 existing.update({row["start"]: row for row in actual_rows(rows)})
                 self.rows[statistic_id] = list(existing.values())
-            self.imports.clear()
+            if clear:
+                self.imports.clear()
 
     recorder = Recorder()
     tasks = []
@@ -167,8 +172,8 @@ def rig(monkeypatch):
     entry = SimpleNamespace(data={
         CONF_SETTINGS: {CONF_ENERGY_STATISTICS_ENABLED: True},
         CONF_ELE_ACCOUNTS: {"display-label": CSGElectricityAccount(ACCOUNT).dump()},
-    }, async_create_background_task=create_task)
-    hass = SimpleNamespace()
+    }, async_create_background_task=create_task, async_on_unload=Mock())
+    hass = SimpleNamespace(data={}, bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())), is_stopping=False)
     bridge = EnergyStatisticsBridge(hass, entry, store)
     monkeypatch.setattr(module, "get_instance", lambda hass: recorder)
     monkeypatch.setattr(module, "async_add_external_statistics", recorder.add)

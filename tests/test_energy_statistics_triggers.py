@@ -41,10 +41,11 @@ def test_history_requests_once_per_completed_pass_not_per_month(history_rig):
     asyncio.run(scenario())
 
 
-def test_entry_initial_request_follows_platforms_and_shutdown_precedes_history(recent_rig, monkeypatch):
+def test_entry_initial_request_and_two_phase_shutdown_order(recent_rig, monkeypatch):
     events = []
     bridge = SimpleNamespace(
         request_sync=Mock(side_effect=lambda: events.append("initial")),
+        stop_requests=Mock(side_effect=lambda: events.append("close requests")),
         async_shutdown=AsyncMock(side_effect=lambda: events.append("bridge")),
     )
     monkeypatch.setattr(integration, "EnergyStatisticsBridge", Mock(return_value=bridge))
@@ -62,7 +63,7 @@ def test_entry_initial_request_follows_platforms_and_shutdown_precedes_history(r
         runtime["history_coordinator"] = SimpleNamespace(async_shutdown=AsyncMock(side_effect=lambda: events.append("history")))
         runtime["billing_coordinator"] = SimpleNamespace(async_shutdown=AsyncMock(side_effect=lambda: events.append("billing")))
         assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
-        assert events == ["forward", "initial", "bridge", "history", "billing", "platforms"]
+        assert events == ["forward", "initial", "close requests", "history", "billing", "bridge", "platforms"]
         assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
         bridge.async_shutdown.assert_awaited_once()
     asyncio.run(scenario())

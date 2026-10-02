@@ -116,7 +116,8 @@ def rig(monkeypatch):
             },
         },
     )
-    hass = SimpleNamespace(data={}, async_add_executor_job=execute)
+    hass = SimpleNamespace(data={}, async_add_executor_job=execute, is_stopping=False,
+                           bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())))
     monkeypatch.setattr(history_module, "Store", Storage)
     monkeypatch.setattr(sensor, "Store", Storage)
     monkeypatch.setattr(sensor.CSGCoordinator, "_client", AsyncMock(return_value=client))

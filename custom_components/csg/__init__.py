@@ -79,11 +79,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cleanup_errors: list[Exception] = []
     bridge = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("energy_statistics_bridge")
     if bridge is not None:
-        try:
-            await bridge.async_shutdown()
-        except Exception as err:
-            _LOGGER.exception("Energy statistics cleanup failed; continuing entry cleanup")
-            cleanup_errors.append(err)
+        bridge.stop_requests()
     history = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("history_coordinator")
     if history is not None:
         try:
@@ -97,6 +93,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await billing.async_shutdown()
         except Exception as err:
             _LOGGER.exception("Billing cleanup failed; continuing platform cleanup")
+            cleanup_errors.append(err)
+    if bridge is not None:
+        try:
+            await bridge.async_shutdown()
+        except Exception as err:
+            _LOGGER.exception("Energy statistics cleanup failed; continuing entry cleanup")
             cleanup_errors.append(err)
     try:
         unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -9,6 +9,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,7 +22,7 @@ from homeassistant.components.recorder.statistics import (
     async_add_external_statistics, get_metadata, statistics_during_period,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util.unit_conversion import EnergyConverter
 
@@ -35,6 +36,16 @@ _ABS_TOL = 1e-9
 # Read the entire series, including rows outside the Store's known date range,
 # so an extra earlier/later row cannot escape the non-destructive anomaly gate.
 _QUERY_START = dt.datetime.min.replace(tzinfo=dt.UTC)
+_IMPORT_LANES = "csg_energy_import_lanes"
+_CONFIRMATION_TIMEOUT = 30
+
+
+@dataclass
+class _ImportLane:
+    """In-memory ownership survives entry runtime removal, never process exit."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    target: tuple[StatisticMetaData, list[StatisticData]] | None = None
 
 
 def statistic_metadata(account_number: str) -> StatisticMetaData:
@@ -118,11 +129,38 @@ class EnergyStatisticsBridge:
         self._task: asyncio.Task[None] | None = None
         self._pending = False
         self._shutdown = False
+        self._accepting = True
+        self._owned: set[str] = set()
+        self._lanes: dict[str, _ImportLane] = hass.data.setdefault(_IMPORT_LANES, {})
+        self._unsubscribe = None
+        if self.enabled:
+            self._unsubscribe = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._on_stop)
+            entry.async_on_unload(self._unsubscribe_stop)
+
+    @callback
+    def _unsubscribe_stop(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+    @callback
+    def stop_requests(self) -> None:
+        """Close producers' request gate before their shutdown/drain."""
+        self._accepting = False
+        self._pending = False
+
+    @callback
+    def _on_stop(self, event) -> None:
+        """A dying HA process must not wait indefinitely for its Recorder."""
+        self.stop_requests()
+        self._shutdown = True
+        if self._task is not None:
+            self._task.cancel()
 
     @callback
     def request_sync(self) -> None:
         """Collapse all requests during a pass into one following pass."""
-        if not self.enabled or self._shutdown:
+        if not self.enabled or not self._accepting or self._shutdown:
             return
         self._pending = True
         if self._task is None or self._task.done():
@@ -142,19 +180,74 @@ class EnergyStatisticsBridge:
             self._task = None
 
     async def async_shutdown(self) -> None:
-        """Close requests and cancel comparisons; Recorder owns queued imports."""
-        self._shutdown = True
-        self._pending = False
+        """Drain owned imports on reload; preserve ownership on cancellation/error."""
+        self.stop_requests()
         task = self._task
-        if task is None:
-            return
-        if not task.done():
-            task.cancel()
+        outstanding = any(self._lanes[key].target is not None for key in self._owned)
+        if not outstanding or self.hass.is_stopping:
+            self._shutdown = True
+            if task is not None and not task.done():
+                task.cancel()
         try:
-            await asyncio.shield(task)
+            if task is not None:
+                await asyncio.shield(task)
+            elif outstanding and not self._shutdown:
+                # A previous read/Recorder error ended the worker. Retained
+                # lane ownership still gates every future Bridge comparison.
+                await self._async_sync()
         except asyncio.CancelledError:
-            if asyncio.current_task().cancelling() or not task.cancelled():
+            if asyncio.current_task().cancelling():
+                if task is not None:
+                    task.cancel()
                 raise
+            if task is None or not task.cancelled():
+                raise
+        finally:
+            self._shutdown = True
+            self._unsubscribe_stop()
+
+    async def _async_actual(self, recorder, statistic_id):
+        existing = await recorder.async_add_executor_job(partial(
+            get_metadata, self.hass, statistic_ids={statistic_id},
+        ))
+        metadata = existing[statistic_id][1] if statistic_id in existing else None
+        actual = await recorder.async_add_executor_job(
+            statistics_during_period, self.hass, _QUERY_START, None,
+            {statistic_id}, "hour", {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR},
+            {"state", "sum"},
+        )
+        return metadata, actual.get(statistic_id, [])
+
+    async def _async_confirm(self, recorder, lane: _ImportLane) -> None:
+        """Read back the differing import target, never just the latest Store.
+
+        One lane permits only one import in flight per statistic. HA imports
+        commit their own transaction and retry by requeuing on failure. Seeing
+        the complete target (including its previously different row/name) is
+        the completion evidence. A queue/commit future is only a pacing hint:
+        it can miss an executing import or precede a requeued retry.
+        """
+        # An unavailable/dropped import must not hold ordinary unload forever.
+        # Timeout defers this account and RETAINS its ownership; it never proves
+        # completion or permits a fresh comparison to bypass the old target.
+        async with asyncio.timeout(_CONFIRMATION_TIMEOUT):
+            await self._async_read_back(recorder, lane)
+
+    async def _async_read_back(self, recorder, lane: _ImportLane) -> None:
+        while lane.target is not None:
+            if self.hass.is_stopping or recorder.stop_requested:
+                raise RuntimeError("Recorder is stopping with an unconfirmed import")
+            await recorder.async_block_till_done()
+            metadata, desired = lane.target
+            current, actual = await self._async_actual(recorder, metadata["statistic_id"])
+            if current is not None and not _compatible(current, metadata):
+                raise ValueError("Unconfirmed import has incompatible Recorder metadata")
+            if current is not None and _compatible(current, metadata) and current.get("name") == metadata["name"]:
+                if not _different_suffix(desired, actual):
+                    lane.target = None
+                    return
+            # Retry pacing only; elapsed time never confirms an import.
+            await asyncio.sleep(0.05)
 
     async def _async_sync(self) -> None:
         if not self.enabled or self._shutdown:
@@ -173,23 +266,39 @@ class EnergyStatisticsBridge:
             metadata = statistic_metadata(account)
             statistic_id = metadata["statistic_id"]
             try:
-                desired = build_statistics(await self.history_store.async_daily_usage_snapshot(account))
-                existing = await recorder.async_add_executor_job(partial(
-                    get_metadata, self.hass, statistic_ids={statistic_id},
-                ))
-                current_meta = existing[statistic_id][1] if statistic_id in existing else None
-                if current_meta is not None and not _compatible(current_meta, metadata):
-                    _LOGGER.warning("Incompatible external statistics metadata for %s; skipped", statistic_id)
-                    continue
-                actual = await recorder.async_add_executor_job(
-                    statistics_during_period, self.hass, _QUERY_START, None,
-                    {statistic_id}, "hour", {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR},
-                    {"state", "sum"},
-                )
-                suffix = _different_suffix(desired, actual.get(statistic_id, []))
-                if self._shutdown:
-                    return
-                if suffix or (current_meta is not None and current_meta.get("name") != metadata["name"]):
-                    async_add_external_statistics(self.hass, metadata, suffix)
+                lane = self._lanes.setdefault(statistic_id, _ImportLane())
+                async with lane.lock:
+                    # A new/reloaded Bridge inherits any unconfirmed old target
+                    # before it is allowed to compare against its latest Store.
+                    if lane.target is not None:
+                        await self._async_confirm(recorder, lane)
+                    while not self._shutdown:
+                        if not await self.history_store.async_ensure_persisted():
+                            return
+                        desired = build_statistics(await self.history_store.async_daily_usage_snapshot(account))
+                        existing = await recorder.async_add_executor_job(partial(
+                            get_metadata, self.hass, statistic_ids={statistic_id},
+                        ))
+                        current_meta = existing[statistic_id][1] if statistic_id in existing else None
+                        if current_meta is not None and not _compatible(current_meta, metadata):
+                            _LOGGER.warning("Incompatible external statistics metadata for %s; skipped", statistic_id)
+                            break
+                        actual = await recorder.async_add_executor_job(
+                            statistics_during_period, self.hass, _QUERY_START, None,
+                            {statistic_id}, "hour", {EnergyConverter.UNIT_CLASS: UnitOfEnergy.KILO_WATT_HOUR},
+                            {"state", "sum"},
+                        )
+                        suffix = _different_suffix(desired, actual.get(statistic_id, []))
+                        if self._shutdown:
+                            return
+                        if not suffix and (current_meta is None or current_meta.get("name") == metadata["name"]):
+                            break
+                        async_add_external_statistics(self.hass, metadata, suffix)
+                        # No await between public enqueue and ownership capture.
+                        lane.target = (metadata, desired)
+                        self._owned.add(statistic_id)
+                        await self._async_confirm(recorder, lane)
+                        # Always reread durable Store after confirmation, even
+                        # without another request or while ordinary unload drains.
             except Exception:
                 _LOGGER.warning("CSG external energy statistics unsafe or unavailable for %s; skipped", statistic_id, exc_info=True)

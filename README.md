@@ -85,6 +85,11 @@ in `Asia/Shanghai`. Missing days stay absent. There is one daily aggregate point
 without invented hourly distribution; hourly charts may therefore look sparse.
 Monthly bills and reconciliation never alter these daily statistics. Historical
 revisions and newly published missing days converge on later syncs or restart.
+Queued imports are read back before a final comparison with the latest durable
+facts. Unconfirmed import ownership survives an integration reload in memory;
+temporary Recorder failures defer convergence without discarding that ownership.
+Ordinary unload stops producers before draining imports. Home Assistant shutdown
+cancels the wait, and a fresh process compares against the committed database.
 Turning the setting off stops Recorder access and retains existing statistics.
 There is no deletion feature, external cost statistic, or tariff calculation.
 

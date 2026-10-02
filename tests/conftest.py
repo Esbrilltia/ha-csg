@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+import homeassistant  # Initialize HA's probatio alias before test imports voluptuous.
 
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT))
