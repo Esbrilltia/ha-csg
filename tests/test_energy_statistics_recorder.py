@@ -88,7 +88,8 @@ def recorder_world(tmp_path, monkeypatch):
 
             async def sync(worker=bridge):
                 worker.request_sync()
-                await worker._task
+                if worker._task is not None:
+                    await worker._task
                 await drain()
 
             async def upsert(values):

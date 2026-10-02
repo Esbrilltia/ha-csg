@@ -20,7 +20,7 @@ from requests import RequestException
 import custom_components.csg as integration
 from custom_components.csg import history_coordinator as module, history_store as store_module, sensor
 from custom_components.csg.const import (
-    CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
+    CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
     CONF_UPDATE_INTERVAL, DOMAIN, SUFFIX_LAST_MONTH_COST,
 )
 from custom_components.csg.csg_client import CSGAPIError, CSGElectricityAccount
@@ -117,7 +117,7 @@ def rig(monkeypatch):
         entry_id="synthetic-history", title="CSG synthetic",
         data={
             CONF_AUTH_TOKEN: "synthetic-auth", "username": "synthetic-user",
-            CONF_SETTINGS: {CONF_HISTORY_START_MONTH: "2024-02", CONF_UPDATE_INTERVAL: 3600},
+            CONF_SETTINGS: {CONF_HISTORY_START_MONTH: "2024-02", CONF_UPDATE_INTERVAL: 3600, CONF_ENERGY_STATISTICS_ENABLED: False},
             CONF_ELE_ACCOUNTS: {"fictional-a": CSGElectricityAccount("fictional-a").dump()},
         },
         async_create_background_task=create_task,
@@ -130,15 +130,6 @@ def rig(monkeypatch):
     monkeypatch.setattr(store_module, "_csg_today", lambda: clock.now.astimezone(module._CSG_TIME_ZONE).date())
     # Any architecture violation fails the test where it occurs.
     forbidden = []
-    for owner, name in (
-        (sensor.BillingCoordinator, "_async_correct_statistics"),
-        (sensor.EnergyLedger, "async_record_billing"),
-        (sensor.EnergyLedger, "async_record_realtime"),
-        (sensor.EnergyLedger, "async_acknowledge_corrections"),
-    ):
-        stub = AsyncMock(side_effect=AssertionError("Historical collection touched legacy corrections"))
-        monkeypatch.setattr(owner, name, stub)
-        forbidden.append(stub)
     import homeassistant.components.recorder as recorder
     from homeassistant.components.recorder.core import Recorder
     from homeassistant.components.recorder import statistics

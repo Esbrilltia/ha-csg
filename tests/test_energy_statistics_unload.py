@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from homeassistant.const import CONF_USERNAME
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 import custom_components.csg as integration
 from custom_components.csg import energy_statistics as energy, sensor
@@ -60,7 +60,7 @@ async def setup(world, monkeypatch):
     await world.bridge.async_shutdown()
     dr.async_setup(world.hass)
     await dr.async_load(world.hass, load_empty=True)
-    await sensor.er.async_load(world.hass, load_empty=True)
+    await er.async_load(world.hass, load_empty=True)
     world.hass.config_entries._entries[world.entry.entry_id] = world.entry
     world.hass.config_entries.async_update_entry(world.entry, data={
         **world.entry.data, CONF_AUTH_TOKEN: "synthetic", CONF_USERNAME: "synthetic",

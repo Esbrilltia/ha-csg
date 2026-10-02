@@ -328,14 +328,11 @@ def test_extra_or_malformed_recorder_rows_stop_one_account_without_cleanup(rig, 
     assert "unsafe or unavailable" in caplog.text
 
 
-@pytest.mark.parametrize("enabled", [False, None])
-def test_disabled_or_missing_setting_performs_no_recorder_access(rig, enabled):
+@pytest.mark.parametrize("enabled", [False])
+def test_explicit_false_performs_no_recorder_access(rig, enabled):
     async def scenario():
         await rig.upsert({"2026-09-01": 2})
-        if enabled is None:
-            rig.entry.data[CONF_SETTINGS].clear()
-        else:
-            rig.entry.data[CONF_SETTINGS][CONF_ENERGY_STATISTICS_ENABLED] = enabled
+        rig.entry.data[CONF_SETTINGS][CONF_ENERGY_STATISTICS_ENABLED] = enabled
         worker = EnergyStatisticsBridge(rig.hass, rig.entry, rig.store)
         rig.store.async_ensure_persisted = AsyncMock(side_effect=AssertionError("Disabled Store read"))
         worker.request_sync()

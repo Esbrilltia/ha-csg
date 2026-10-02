@@ -29,6 +29,7 @@ from .const import (
     CONF_BILLING_UPDATE_TIME,
     CONF_ELE_ACCOUNTS,
     CONF_ENERGY_STATISTICS_ENABLED,
+    DEFAULT_ENERGY_STATISTICS_ENABLED,
     CONF_GENERAL_ERROR,
     CONF_HISTORY_START_MONTH,
     CONF_LOGIN_TYPE,
@@ -382,6 +383,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ELE_ACCOUNTS: {},
             CONF_SETTINGS: {
                 CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+                CONF_ENERGY_STATISTICS_ENABLED: DEFAULT_ENERGY_STATISTICS_ENABLED,
             },
             CONF_UPDATED_AT: str(int(time.time() * 1000)),
         }
@@ -545,7 +547,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         history_start = self._entry.data[CONF_SETTINGS].get(
             CONF_HISTORY_START_MONTH, ""
         )
-        energy_enabled = self._entry.data[CONF_SETTINGS].get(CONF_ENERGY_STATISTICS_ENABLED, False)
+        energy_enabled = self._entry.data[CONF_SETTINGS].get(CONF_ENERGY_STATISTICS_ENABLED, DEFAULT_ENERGY_STATISTICS_ENABLED)
         schema = vol.Schema(
             {
                 vol.Required(CONF_UPDATE_INTERVAL, default=update_interval): vol.All(
