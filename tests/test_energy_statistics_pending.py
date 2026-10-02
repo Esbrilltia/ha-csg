@@ -322,7 +322,10 @@ def test_real_confirmation_during_startup_before_stop_flag_initialization(record
                 task = world.bridge._task
                 await wait_entered(entered)
                 try:
-                    del world.recorder.stop_requested
+                    # Core may already be in this window. Establish absence
+                    # regardless of whether its thread initialized the flag.
+                    vars(world.recorder).pop("stop_requested", None)
+                    assert not hasattr(world.recorder, "stop_requested")
                     assert world.recorder.async_db_ready.result()
                     assert world.recorder.async_recorder_ready.is_set()
                     monkeypatch.setattr(world.recorder, "async_block_till_done", AsyncMock())
