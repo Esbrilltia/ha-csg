@@ -24,7 +24,11 @@ def test_daily_invalid_power_preserves_other_rows(invalid):
     }
     total, rows = client.get_month_daily_usage_detail(ACCOUNT, (2024, 2))
     assert total == 2
-    assert rows == [{"date": "2024-02-01", "kwh": 0.0}, {"date": "2024-02-03", "kwh": 2.0}]
+    assert rows == [
+        {"date": "2024-02-01", "kwh": 0.0},
+        {"date": "2024-02-02"},
+        {"date": "2024-02-03", "kwh": 2.0},
+    ]
 
 
 @pytest.mark.parametrize("invalid_row", [None, "bad", [], {}, {"power": 3}, {"date": None, "power": 3}, {"date": 123, "power": 3}, {"date": "bad", "power": 3}, {"date": "2024-02-30", "power": 3}])

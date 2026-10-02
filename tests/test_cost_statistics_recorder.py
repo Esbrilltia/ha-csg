@@ -50,7 +50,7 @@ def test_real_cost_hole_fill_downward_upward_revision_and_repeat(cost_world):
             await world.sync()
             rows = await world.query_cost()
             assert [(row["state"], row["sum"]) for row in rows] == [(100, 100), (150, 250)]
-            assert rows[0]["start"] == dt.datetime(2025, 12, 31, 16, tzinfo=dt.UTC).timestamp()
+            assert rows[0]["start"] == dt.datetime(2026, 1, 15, 4, tzinfo=dt.UTC).timestamp()
             meta = await world.recorder.async_add_executor_job(partial(get_metadata, world.hass, statistic_ids={world.cost_id}))
             assert {key: meta[world.cost_id][1][key] for key in cost_statistic_metadata(ACCOUNT)} == cost_statistic_metadata(ACCOUNT)
             await world.upsert_bills({"2026-02": 120})
@@ -120,5 +120,24 @@ def test_real_cost_anomalies_preserve_existing_rows_without_cleanup(cost_world, 
             # Final anomaly is an optional view failure. This test calls the
             # Bridge directly, so consume its error rather than claiming success.
             with pytest.raises(ValueError):
+                await world.bridge.async_shutdown()
+    asyncio.run(scenario())
+
+
+def test_real_previous_month_start_anchor_is_preserved_as_anomaly(cost_world, caplog):
+    async def scenario():
+        async with cost_world() as world:
+            await world.upsert_bills({"2026-01": 100})
+            desired = build_cost_statistics({"2026-01": {"cost_cny": 100}}, dt.date(2026, 10, 3))
+            previous = [{**row, "start": row["start"].replace(day=1, hour=0)} for row in desired]
+            async_add_external_statistics(world.hass, cost_statistic_metadata(ACCOUNT), previous)
+            await world.drain()
+            before = await world.query_cost()
+            assert before[0]["start"] == dt.datetime(2025, 12, 31, 16, tzinfo=dt.UTC).timestamp()
+            await world.sync()
+            assert await world.query_cost() == before
+            assert not world.imports
+            assert world.cost_id in caplog.text
+            with pytest.raises(ValueError, match="without a corresponding source fact"):
                 await world.bridge.async_shutdown()
     asyncio.run(scenario())

@@ -58,7 +58,7 @@ def test_builder_single_multiple_holes_zero_cross_year_decimal(values, expected)
     assert source == before
     assert [row["start"].date().isoformat()[:7] for row in rows] == sorted(values)
     assert all(row["start"].tzinfo == ZoneInfo("Asia/Shanghai") for row in rows)
-    assert all(row["start"].day == 1 and row["start"].time() == dt.time() for row in rows)
+    assert all(row["start"].day == 15 and row["start"].time() == dt.time(12) for row in rows)
 
 
 @pytest.mark.parametrize("month", [
@@ -75,10 +75,10 @@ def test_missing_negative_nonfinite_and_invalid_costs_produce_no_row(value):
     assert build_cost_statistics({"2026-01": {"usage_kwh": 100}}, TODAY) == []
 
 
-def test_interval_uses_month_start_not_fetch_time_and_current_month_is_open():
+def test_interval_uses_month_anchor_not_fetch_time_and_current_month_is_open():
     rows = build_cost_statistics(bills({"2026-09": 100, "2026-10": 120}), dt.date(2026, 10, 1))
     assert len(rows) == 1
-    assert rows[0]["start"].astimezone(dt.UTC) == dt.datetime(2026, 8, 31, 16, tzinfo=dt.UTC)
+    assert rows[0]["start"].astimezone(dt.UTC) == dt.datetime(2026, 9, 15, 4, tzinfo=dt.UTC)
 
 
 @pytest.mark.parametrize("revision", [98, 103])

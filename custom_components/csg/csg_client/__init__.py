@@ -671,7 +671,11 @@ class CSGClient:
     def get_month_daily_usage_detail(
         self, account: CSGElectricityAccount, year_month: tuple[int, int]
     ) -> tuple[float, list[dict[str, str | float]]]:
-        """Get daily usage of current month"""
+        """Get monthly daily facts and date-only markers for invalid observations.
+
+        A marker preserves upstream coverage for tariff completeness; it has
+        no kWh and must never be stored or displayed as a daily usage fact.
+        """
 
         year, month = year_month
 
@@ -685,20 +689,23 @@ class CSGClient:
         month_total_kwh = float(resp_data["totalPower"])
         by_day = []
         for d_data in resp_data["result"]:
-            # An unpublished or invalid daily value is not a zero reading.
-            # Filter at the shared boundary used by realtime, bills and ladder.
-            if not isinstance(d_data, Mapping) or isinstance(d_data.get("power"), bool):
+            if not isinstance(d_data, Mapping):
                 continue
             try:
                 day = datetime.date.fromisoformat(d_data.get("date"))
-                daily_kwh = float(d_data.get("power"))
+            except (TypeError, ValueError):
+                continue
+            row: dict[str, str | float] = {WF_ATTR_DATE: day.isoformat()}
+            by_day.append(row)
+            power = d_data.get("power")
+            if isinstance(power, bool):
+                continue
+            try:
+                daily_kwh = float(power)
             except (TypeError, ValueError, OverflowError):
                 continue
-            if not math.isfinite(daily_kwh) or daily_kwh < 0:
-                continue
-            by_day.append(
-                {WF_ATTR_DATE: day.isoformat(), WF_ATTR_KWH: daily_kwh}
-            )
+            if math.isfinite(daily_kwh) and daily_kwh >= 0:
+                row[WF_ATTR_KWH] = daily_kwh
         return month_total_kwh, by_day
 
     def get_month_daily_cost_detail(

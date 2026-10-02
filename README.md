@@ -115,9 +115,10 @@ from durable facts. There is no currency conversion. Changing or disabling a
 tariff profile does not change or delete official costs. Disabling external
 statistics stops both energy and cost access while retaining their history.
 
-Only months before the current Asia/Shanghai month are materialized, even if
-the upstream API sends a current-month bill. Each known month's interval starts
-at **00:00 Asia/Shanghai on its first day**, then HA converts it to UTC. `state`
+CSG bill months are natural calendar months in **Asia/Shanghai**. Only months
+before the current Shanghai month are materialized, even if the upstream API
+sends a current-month bill. Each whole-month fact is anchored at **12:00
+Asia/Shanghai on its 15th day**, then HA converts it to UTC. `state`
 is that month's official cost; `sum` accumulates known bills using Decimal.
 Real zero is valid. Missing, invalid or unpublished months have no row. Filling
 a hole or revising a bill, including a downward revision, rebuilds the cumulative
@@ -125,14 +126,24 @@ suffix from the earliest changed month. No delta adjustment or clearing is used.
 Cost imports use the same per-statistic ownership, real readback, retry, unload
 producer barrier and fresh-process recovery as energy imports, in separate lanes.
 
-**Official costs are monthly only.** Monthly totals are correct for known bills;
-missing bills remain unknown. The day view can show sparse points on month
-starts. This is intentional monthly bill behavior. No daily charge is allocated,
+**Official costs are monthly only.** HA charts and calendar aggregation use the
+configured HA timezone. The mid-month anchor is a Recorder materialization
+convention that keeps each cost in its bill's month and year across IANA offsets;
+it is not a charge incurred on the 15th. Real HA Core 2026.9.3 import, monthly and
+yearly deltas, and Energy validation are tested with **Asia/Shanghai, UTC,
+America/Los_Angeles, Pacific/Kiritimati and Pacific/Pago_Pago**. Other HA versions
+are unverified. Missing bills remain unknown. Day views show sparse points on
+the local dates containing those anchors, not actual daily charges. No daily charge is allocated,
 interpolated, filled with zero or reconstructed with tariff × daily kWh. Latest
 settlement-day cost and this-month cost remain unavailable. Production never
 calls the retired daily-cost or yesterday API wrappers. The integration does
 not write `.storage/energy` or call Energy preferences APIs; users pair the
 consumption and cost IDs manually.
+
+Earlier experimental M6 rows anchored at month-start are not automatically
+moved or cleared. If an existing cost statistic contains those rows, the Bridge
+reports an unexpected-row anomaly and preserves them; migration requires a
+separate decision before that statistic can converge to the new convention.
 
 ## Explicit current Guangzhou tariff profiles
 
@@ -168,8 +179,11 @@ or running monthly estimate.
 | Multi-person, November–April | 300 kWh | 500 kWh |
 
 Limits are inclusive. Ordinary inclusive rates are **0.58886875**, **0.63886875**
-and **0.88886875 CNY/kWh**. First-tier TOU inclusive rates are **peak 0.96596875**,
-**flat 0.58886875**, **valley 0.29876875**. TOU adds **0.05** in tier 2 or **0.30**
+and **0.88886875 CNY/kWh**. First-tier TOU inclusive rates are **peak 0.99500875**,
+**flat 0.58886875**, **valley 0.22914475**. The Decimal component model is
+**0.5802 × period ratio + 0.00866875 CNY/kWh**: the base excludes government
+funds/addons, and the fixed addons do not take part in the ratio. TOU adds
+**0.05** in tier 2 or **0.30**
 in tier 3 after the time-of-use rate; residential users have no sharp-peak rate.
 The inclusive flat price is never multiplied by a peak ratio. All calculations
 and threshold comparisons use `Decimal(str(value))`.
@@ -179,17 +193,27 @@ Asia/Shanghai periods are valley **00:00–08:00**, peak **10:00–12:00** and
 `current_ladder_tariff` unique ID and now reports **CNY/kWh**, without a monetary
 device class or total state class. TOU boundaries update locally from cached
 usage, without additional daily API calls. A ladder start date is shown only
-when every date from month start through the newest published day is present;
-holes leave that date unavailable while the authoritative total still determines
-tier and remaining allowance.
+when every date from month start through the newest observed/published day has
+valid finite nonnegative kWh. The daily client preserves dated invalid readings
+as date-only coverage markers, so an invalid tail cannot shorten that interval.
+Holes or invalid readings leave the start date unavailable while the
+authoritative total still determines tier and remaining allowance. Markers have
+no kWh: HistoryStore does not save them as facts, invalid yesterday remains
+unavailable, and latest settlement selects only valid daily fact rows.
 
 Static policy sources are 粤价〔2012〕135号 (ladder), 粤发改价格〔2017〕498号
 (Guangzhou prices), 粤发改价格函〔2021〕826号 and 粤发改价格函〔2023〕553号
-(multi-person), and 粤发改价格〔2021〕331号 (TOU). Rates are cross-checked against
-the [official Guangzhou inclusive price table](https://www.gz.gov.cn/attachment/0/89/89550/6432486.pdf);
-the [official policy explanation](https://www.haizhu.gov.cn/gzhzfg/attachment/7/7570/7570103/9476645.pdf)
-confirms thresholds and TOU-before-ladder calculation. Government websites are
-not queried at runtime.
+(multi-person), and 粤发改价格〔2021〕331号 (TOU). The
+[2021 policy announcement](https://www.ndrc.gov.cn/xwdt/gdzt/jgjzgg/nyjggg/202110/t20211027_1301148.html)
+changes the old **1.65 : 1 : 0.5** ratio to **1.7 : 1 : 0.38**, effective
+**2021-10-01**. The
+[2024 Guangzhou explanation](https://www.haizhu.gov.cn/zwgk/zdlyxxgk/jghsf/jgbz/content/post_9476644.html)
+and its [policy text](https://www.haizhu.gov.cn/gzhzfg/attachment/7/7570/7570103/9476645.pdf)
+confirm that these ratios exclude government funds/addons and that TOU comes
+before ladder surcharges. The
+[2019 Guangzhou price table](https://www.gz.gov.cn/attachment/0/89/89550/6432486.pdf)
+is a reference for ordinary and combined prices; its old TOU entries are not
+the current TOU policy. Government websites are not queried at runtime.
 
 ## Installation
 

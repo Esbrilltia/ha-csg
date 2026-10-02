@@ -35,11 +35,11 @@ def test_tou_entity_tracks_shanghai_boundaries_without_cloud_refresh_and_cleans_
             # HA's display zone does not determine Guangzhou's billing clock.
             dt_util.set_default_time_zone(ZoneInfo("America/Los_Angeles"))
             tariff = next(entity for entity in world.component.entities if entity.unique_id.endswith(".current_ladder_tariff"))
-            assert tariff.native_value == 0.29876875
+            assert tariff.native_value == 0.22914475
             tracker = tariff._unsub_tariff_boundary.__self__
             cloud = Mock(side_effect=AssertionError("TOU boundary requested cloud data"))
             monkeypatch.setattr(world.cloud, "get_month_daily_usage_detail", cloud)
-            for hour, rate in [(8, 0.58886875), (10, 0.96596875), (12, 0.58886875), (14, 0.96596875), (19, 0.58886875), (0, 0.29876875)]:
+            for hour, rate in [(8, 0.58886875), (10, 0.99500875), (12, 0.58886875), (14, 0.99500875), (19, 0.58886875), (0, 0.22914475)]:
                 clock[0] = clock[0].replace(hour=hour, minute=0, second=0)
                 # Exercise HA's real registered timer/job at its next boundary,
                 # advancing the clock instead of waiting hours of wall time.

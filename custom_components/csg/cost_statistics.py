@@ -40,7 +40,11 @@ def cost_statistic_metadata(account_number: str) -> StatisticMetaData:
 def build_cost_statistics(
     monthly_bills: Mapping[str, Mapping[str, Any]], today: dt.date,
 ) -> list[StatisticData]:
-    """Build sparse monthly rows; holes stay unknown, revisions rebuild sums."""
+    """Anchor whole-month facts mid-month; holes stay unknown, revisions rebuild.
+
+    Shanghai's 15th at noon remains in the fact's calendar month across IANA
+    offsets. It is a Recorder materialization point, not a daily charge date.
+    """
     bills = []
     current_month = today.replace(day=1)
     for key, bill in monthly_bills.items():
@@ -70,7 +74,7 @@ def build_cost_statistics(
         if not math.isfinite(state) or not math.isfinite(cumulative):
             raise ValueError("Monthly cost exceeds Recorder numeric range")
         rows.append(StatisticData(
-            start=dt.datetime.combine(month, dt.time(), _CSG_TIME_ZONE),
+            start=dt.datetime.combine(month.replace(day=15), dt.time(12), _CSG_TIME_ZONE),
             state=state, sum=cumulative,
         ))
     return rows

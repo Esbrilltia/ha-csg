@@ -19,6 +19,7 @@ from custom_components.csg.const import (
     SUFFIX_CURRENT_LADDER, SUFFIX_CURRENT_LADDER_REMAINING_KWH, SUFFIX_CURRENT_LADDER_TARIFF,
 )
 from custom_components.csg.tariff import (
+    BASE_EX_FUNDS, FIXED_ADDONS, FLAT_RATIO, PEAK_RATIO, VALLEY_RATIO,
     GUANGZHOU_PROFILES, current_ladder, resolve_tariff_profile, tou_period, validate_tariff_selection,
 )
 
@@ -91,13 +92,28 @@ def test_tou_boundaries_and_timezone_conversion(clock, expected):
     now = dt.datetime.combine(NOW.date(), dt.time.fromisoformat(clock), SHANGHAI)
     assert tou_period(now) == expected
     assert tou_period(now.astimezone(ZoneInfo("America/Los_Angeles"))) == expected
-    rates = {"peak": Decimal("0.96596875"), "flat": Decimal("0.58886875"), "valley": Decimal("0.29876875")}
+    rates = {"peak": Decimal("0.99500875"), "flat": Decimal("0.58886875"), "valley": Decimal("0.22914475")}
     for multi in (False, True):
         policy = profile(multi=multi, tou=True)
         assert [policy.current_rate(tier, now) for tier in (1, 2, 3)] == [rates[expected] + surcharge for surcharge in (Decimal(0), Decimal("0.05"), Decimal("0.30"))]
 
 
-def test_final_rates_are_explicit_and_combined_has_no_ladder():
+def test_tou_components_exclude_funds_from_ratios_and_match_current_policy():
+    policy = profile(tou=True)
+    assert BASE_EX_FUNDS == Decimal("0.5802")
+    assert FIXED_ADDONS == Decimal("0.00866875")
+    assert (PEAK_RATIO, FLAT_RATIO, VALLEY_RATIO) == (Decimal("1.7"), Decimal("1"), Decimal("0.38"))
+    expected = {"peak": Decimal("0.99500875"), "flat": Decimal("0.58886875"), "valley": Decimal("0.22914475")}
+    for period, ratio in (("peak", PEAK_RATIO), ("flat", FLAT_RATIO), ("valley", VALLEY_RATIO)):
+        assert policy.rate_table[period] == expected[period] == BASE_EX_FUNDS * ratio + FIXED_ADDONS
+        if period != "flat":
+            assert policy.rate_table[period] != policy.rate_table["flat"] * ratio
+    assert policy.effective_from == dt.date(2021, 10, 1)
+    assert any("331" in source and "1.7:1:0.38" in source for source in policy.source)
+    assert any("2024" in source for source in policy.source)
+
+
+def test_final_ordinary_rates_and_combined_have_no_tou_change():
     ordinary = profile()
     assert [ordinary.current_rate(tier, NOW) for tier in (1, 2, 3)] == [Decimal("0.58886875"), Decimal("0.63886875"), Decimal("0.88886875")]
     combined = profile(combined=True)
@@ -164,7 +180,7 @@ def test_configured_coordinator_uses_current_policy_and_authoritative_usage(monk
     assert result[SUFFIX_CURRENT_LADDER] == 2
     assert result[SUFFIX_CURRENT_LADDER_REMAINING_KWH] == (300 if choice["multi_person"] else 200)
     assert result[ATTR_KEY_CURRENT_LADDER_START_DATE][ATTR_KEY_CURRENT_LADDER_START_DATE] is None
-    assert coordinator.current_tariff(account.account_number) == (1.01596875 if choice["tou"] else 0.63886875)
+    assert coordinator.current_tariff(account.account_number) == (1.04500875 if choice["tou"] else 0.63886875)
     coordinator._fetch.assert_awaited_once_with(client.get_month_daily_usage_detail, account, (2026, 9))
     monkeypatch.setattr(sensor, "_csg_now", lambda: NOW.replace(month=10, day=1))
     assert coordinator.current_tariff(account.account_number) == STATE_UNAVAILABLE

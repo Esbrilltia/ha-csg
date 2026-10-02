@@ -1,4 +1,4 @@
-"""B-2: only finite nonnegative daily facts cross the client boundary.
+"""B-2: finite nonnegative facts and nonfact coverage at the client boundary.
 
 Synthetic cloud responses exercise the real client and all three consumers.
 HistoryStore replaces the retired ledger as the sole daily fact authority.
@@ -24,7 +24,7 @@ from custom_components.csg.const import (
 )
 from custom_components.csg.csg_client import CSGClient
 from custom_components.csg.sensor import (
-    BILLING_DESCRIPTIONS, BillingCoordinator, CSGSensor, CurrentCoordinator,
+    BILLING_DESCRIPTIONS, CURRENT_DESCRIPTIONS, BillingCoordinator, CSGSensor, CurrentCoordinator,
     RealtimeCoordinator,
 )
 from test_history_store import make_store
@@ -38,6 +38,8 @@ INVALID = [
     pytest.param(-1.0, id="negative"),
     pytest.param(None, id="none"),
     pytest.param("", id="empty-string"),
+    pytest.param("not-a-number", id="malformed-number"),
+    pytest.param(True, id="boolean"),
 ]
 ACCOUNT = SimpleNamespace(
     account_number="synthetic-account", area_code="080000",
@@ -45,11 +47,11 @@ ACCOUNT = SimpleNamespace(
 )
 
 
-def make_client(rows, total="0"):
+def make_client(rows, total="0", year_month=(2026, 8)):
     client = CSGClient.__new__(CSGClient)
     client.api_query_day_electric_by_m_point = lambda year, month, *args: {
         "totalPower": total,
-        "result": deepcopy(rows) if (year, month) == (2026, 8) else [],
+        "result": deepcopy(rows) if (year, month) == year_month else [],
     }
     client.get_balance_and_arrears = lambda account: (1.0, 0.0)
     return client
@@ -96,7 +98,7 @@ def clock(monkeypatch):
 @pytest.mark.parametrize("power", INVALID)
 def test_invalid_daily_usage_never_becomes_a_fact(power):
     client = make_client([{"date": "2026-08-02", "power": power}])
-    assert client.get_month_daily_usage_detail(ACCOUNT, (2026, 8)) == (0.0, [])
+    assert client.get_month_daily_usage_detail(ACCOUNT, (2026, 8)) == (0.0, [{"date": "2026-08-02"}])
     history = make_store()
     data = run(make_coordinator(RealtimeCoordinator, client, history)._async_update_data())
     assert data[ACCOUNT.account_number][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
@@ -113,7 +115,7 @@ def test_invalid_daily_usage_never_becomes_a_fact(power):
 
 def test_missing_daily_power_is_not_zero():
     client = make_client([{"date": "2026-08-02"}])
-    assert client.get_month_daily_usage_detail(ACCOUNT, (2026, 8)) == (0.0, [])
+    assert client.get_month_daily_usage_detail(ACCOUNT, (2026, 8)) == (0.0, [{"date": "2026-08-02"}])
     history = make_store()
     data = run(make_coordinator(RealtimeCoordinator, client, history)._async_update_data())
     assert not entity(data, yesterdays_kwh_description()).available
@@ -209,3 +211,69 @@ def test_invalid_daily_values_do_not_enter_ladder_accumulation(power):
     }
     assert data[ACCOUNT.account_number][SUFFIX_CURRENT_LADDER] == 2
     assert data[ACCOUNT.account_number][SUFFIX_CURRENT_LADDER_REMAINING_KWH] == 330
+
+
+@pytest.mark.parametrize("power", INVALID)
+def test_invalid_tail_keeps_coverage_through_real_client_coordinator_tariff_and_entities(monkeypatch, power):
+    freeze_utcnow(monkeypatch, dt.datetime(2026, 9, 4, 4, tzinfo=dt.UTC))
+    client = make_client([
+        {"date": "2026-09-01", "power": 250},
+        {"date": "2026-09-02", "power": 20},
+        {"date": "2026-09-03", "power": power},
+    ], total="270", year_month=(2026, 9))
+    assert client.get_month_daily_usage_detail(ACCOUNT, (2026, 9)) == (270, [
+        {"date": "2026-09-01", "kwh": 250},
+        {"date": "2026-09-02", "kwh": 20},
+        {"date": "2026-09-03"},
+    ])
+    current = make_coordinator(CurrentCoordinator, client)
+    current.data = run(current._async_update_data())
+    current.last_update_success = True
+    sensors = {description.suffix: CSGSensor(current, ACCOUNT.account_number, description)
+               for description in CURRENT_DESCRIPTIONS}
+    tier = sensors[SUFFIX_CURRENT_LADDER]
+    remaining = sensors[SUFFIX_CURRENT_LADDER_REMAINING_KWH]
+    assert tier.available and tier.native_value == 2
+    assert remaining.available and remaining.native_value == 330
+    assert tier.extra_state_attributes[ATTR_KEY_CURRENT_LADDER_START_DATE] is None
+
+    history = make_store()
+    realtime = run(make_coordinator(RealtimeCoordinator, client, history)._async_update_data())
+    yesterday = entity(realtime, yesterdays_kwh_description())
+    assert not yesterday.available and yesterday.native_value is None
+    billing = run(make_coordinator(BillingCoordinator, client, history)._update_account(
+        client, ACCOUNT, [(2026, 9), (2026, 8)],
+    ))
+    assert billing[SUFFIX_LATEST_DAY_KWH] == 20
+    assert billing[ATTR_KEY_SETTLEMENT_DATE] == {ATTR_KEY_SETTLEMENT_DATE: "2026-09-02"}
+    facts = run(history.async_daily_usage_snapshot(ACCOUNT.account_number))
+    assert {day: fact["kwh"] for day, fact in facts.items()} == {
+        "2026-09-01": 250, "2026-09-02": 20,
+    }
+
+
+def test_real_zero_tail_is_a_fact_and_completes_tariff_coverage(monkeypatch):
+    freeze_utcnow(monkeypatch, dt.datetime(2026, 9, 4, 4, tzinfo=dt.UTC))
+    client = make_client([
+        {"date": "2026-09-01", "power": 250},
+        {"date": "2026-09-02", "power": 20},
+        {"date": "2026-09-03", "power": 0},
+    ], total="270", year_month=(2026, 9))
+    current = make_coordinator(CurrentCoordinator, client)
+    current.data = run(current._async_update_data())
+    current.last_update_success = True
+    tier = CSGSensor(current, ACCOUNT.account_number, next(
+        description for description in CURRENT_DESCRIPTIONS if description.suffix == SUFFIX_CURRENT_LADDER
+    ))
+    assert tier.available and tier.native_value == 2
+    assert tier.extra_state_attributes[ATTR_KEY_CURRENT_LADDER_START_DATE] == "2026-09-02"
+    history = make_store()
+    realtime = run(make_coordinator(RealtimeCoordinator, client, history)._async_update_data())
+    yesterday = entity(realtime, yesterdays_kwh_description())
+    assert yesterday.available and yesterday.native_value == 0
+    billing = run(make_coordinator(BillingCoordinator, client, history)._update_account(
+        client, ACCOUNT, [(2026, 9), (2026, 8)],
+    ))
+    assert billing[SUFFIX_LATEST_DAY_KWH] == 0
+    assert billing[ATTR_KEY_SETTLEMENT_DATE] == {ATTR_KEY_SETTLEMENT_DATE: "2026-09-03"}
+    assert history.daily_usage(ACCOUNT.account_number, "2026-09-03")["kwh"] == 0

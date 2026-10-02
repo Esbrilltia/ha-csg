@@ -743,7 +743,12 @@ class BillingCoordinator(CSGFactCoordinator):
                 )
                 if self.energy_statistics_bridge is not None:
                     self.energy_statistics_bridge.request_sync()
-                daily_days = sorted(usage_days, key=lambda item: str(item[WF_ATTR_DATE]))
+                # The client also returns date-only coverage markers. Settlement
+                # selection uses valid facts; the markers are only for tariff.
+                daily_days = sorted(
+                    (item for item in usage_days if item.get(WF_ATTR_KWH) is not None),
+                    key=lambda item: str(item[WF_ATTR_DATE]),
+                )
 
                 values = (
                     usage_total,

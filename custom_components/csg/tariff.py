@@ -2,9 +2,12 @@
 
 Policy identifiers: 粤价〔2012〕135号, 粤发改价格〔2017〕498号,
 粤发改价格函〔2021〕826号, 粤发改价格函〔2023〕553号,
-粤发改价格〔2021〕331号. The final inclusive rates are also published in
-Guangzhou's price list: https://www.gz.gov.cn/attachment/0/89/89550/6432486.pdf
-Policy text and the first time-of-use, then ladder rule:
+粤发改价格〔2021〕331号 changes 1.65:1:0.5 to 1.7:1:0.38 from
+2021-10-01, excluding government funds and addons:
+https://www.ndrc.gov.cn/xwdt/gdzt/jgjzgg/nyjggg/202110/t20211027_1301148.html
+Guangzhou's 2019 table supplies ordinary/combined prices, not current TOU:
+https://www.gz.gov.cn/attachment/0/89/89550/6432486.pdf
+The 2024 Guangzhou explanation confirms ratios and TOU-before-ladder:
 https://www.haizhu.gov.cn/gzhzfg/attachment/7/7570/7570103/9476645.pdf
 All policies are static. No government website is queried at runtime.
 """
@@ -27,18 +30,28 @@ _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
 _SOURCES = (
     "粤价〔2012〕135号", "粤发改价格〔2017〕498号",
     "粤发改价格函〔2021〕826号", "粤发改价格函〔2023〕553号",
-    "粤发改价格〔2021〕331号", "Guangzhou inclusive electricity price list",
+    "粤发改价格〔2021〕331号 (2021-10-01; 1.7:1:0.38 excluding funds/addons)",
+    "Guangzhou 2019 price list (ordinary/combined prices only)",
+    "Guangzhou 2024 residential price policy explanation",
 )
+BASE_EX_FUNDS = Decimal("0.5802")
+FIXED_ADDONS = Decimal("0.00866875")
+PEAK_RATIO = Decimal("1.7")
+FLAT_RATIO = Decimal("1")
+VALLEY_RATIO = Decimal("0.38")
+_SURCHARGES = (Decimal("0"), Decimal("0.05"), Decimal("0.30"))
+_INCLUSIVE_FLAT = BASE_EX_FUNDS * FLAT_RATIO + FIXED_ADDONS
+# Funds/addons stay fixed in each period. Apply the ladder surcharge only
+# after computing the first-tier TOU price from its excluding-funds base.
 _RATES = MappingProxyType({
-    "tier_1": Decimal("0.58886875"),
-    "tier_2": Decimal("0.63886875"),
-    "tier_3": Decimal("0.88886875"),
-    "peak": Decimal("0.96596875"),
-    "flat": Decimal("0.58886875"),
-    "valley": Decimal("0.29876875"),
+    "tier_1": _INCLUSIVE_FLAT,
+    "tier_2": _INCLUSIVE_FLAT + _SURCHARGES[1],
+    "tier_3": _INCLUSIVE_FLAT + _SURCHARGES[2],
+    "peak": BASE_EX_FUNDS * PEAK_RATIO + FIXED_ADDONS,
+    "flat": _INCLUSIVE_FLAT,
+    "valley": BASE_EX_FUNDS * VALLEY_RATIO + FIXED_ADDONS,
     "combined": Decimal("0.62586875"),
 })
-_SURCHARGES = (Decimal("0"), Decimal("0.05"), Decimal("0.30"))
 
 
 @dataclass(frozen=True)
@@ -66,8 +79,8 @@ class TariffProfile:
         if isinstance(tier, bool) or tier not in (1, 2, 3):
             return None
         if self.tou_enabled:
-            # Final inclusive prices, rather than multiplying the inclusive
-            # flat price by an industrial ratio. Ladder surcharge comes last.
+            # The residential component model leaves funds/addons unscaled.
+            # The ladder surcharge comes after the first-tier TOU price.
             return self.rate_table[tou_period(now)] + _SURCHARGES[tier - 1]
         return self.rate_table[f"tier_{tier}"]
 
@@ -155,7 +168,7 @@ def current_ladder(
     profile: TariffProfile, today: dt.date, usage_total: Any,
     usage_days: Sequence[Mapping[str, Any]],
 ) -> LadderSnapshot:
-    """Use authoritative total for tier; require complete daily dates for start."""
+    """Use authoritative tier total; require valid facts through observed dates."""
     if not profile.ladder_enabled:
         raise ValueError("Profile has no ladder")
     usage = _decimal_usage(usage_total)
@@ -185,8 +198,8 @@ def current_ladder(
         daily[day] = value
 
     start_date = None
-    # Only known, valid dates can establish coverage. A missing date before the
-    # newest published day makes even a seemingly visible crossing uncertain.
+    # A dated observation without valid kWh still extends published coverage.
+    # Every day through that date must have a valid fact to establish a start.
     if daily and not duplicate and len(daily) == max(published).day:
         if tier == 1:
             start_date = today.replace(day=1).isoformat()
