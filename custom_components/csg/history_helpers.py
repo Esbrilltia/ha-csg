@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .csg_client import WF_ATTR_CHARGE, WF_ATTR_KWH, WF_ATTR_MONTH
+from .utils import account_log_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,12 +57,12 @@ def collect_monthly_bill_candidates(
             row.get(WF_ATTR_MONTH) if isinstance(row, Mapping) else None
         )
         if month is None:
-            _LOGGER.warning("Skipped malformed monthly bill month for %s/%s", account, year)
+            _LOGGER.warning("Skipped malformed monthly bill month for %s/%s", account_log_id(account), year)
             continue
         if month[0] != year:
             _LOGGER.warning(
                 "Skipped monthly bill %04d-%02d outside requested year %s for %s",
-                month[0], month[1], year, account,
+                month[0], month[1], year, account_log_id(account),
             )
             continue
         fields = candidates.setdefault(
@@ -82,7 +83,7 @@ def collect_monthly_bill_candidates(
     for month, fields in sorted(candidates.items()):
         if any(len(values) > 1 for values in fields.values()):
             _LOGGER.warning(
-                "Skipped monthly bill conflict for %s/%04d-%02d", account, month[0], month[1]
+                "Skipped monthly bill conflict for %s/%04d-%02d", account_log_id(account), month[0], month[1]
             )
             continue
         accepted[month] = (

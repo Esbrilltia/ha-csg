@@ -27,6 +27,7 @@ from .history_helpers import (
     parse_history_start_month,
 )
 from .history_store import CSGHistoryStore
+from .utils import account_log_id
 
 if TYPE_CHECKING:
     from .energy_statistics import EnergyStatisticsBridge
@@ -204,8 +205,8 @@ class HistoryCoordinator:
             if not await self._fetch(client.verify_login):
                 raise ConfigEntryAuthFailed("Login expired")
             await self._fetch(client.initialize)
-        except Exception:
-            _LOGGER.exception("Could not initialize historical sync; checkpoints retained")
+        except Exception as err:
+            _LOGGER.warning("Could not initialize historical sync; checkpoints retained: %s", type(err).__name__)
             return
 
         for account, daily, bills in pending:
@@ -223,7 +224,7 @@ class HistoryCoordinator:
                     if not await self.history_store.async_ensure_persisted():
                         _LOGGER.warning(
                             "Historical daily facts not durable for %s/%s",
-                            account.account_number, month_key(month),
+                            account_log_id(account.account_number), month_key(month),
                         )
                         continue
                     if not await self.history_store.async_complete_history_unit(
@@ -231,12 +232,12 @@ class HistoryCoordinator:
                     ):
                         _LOGGER.warning(
                             "Historical daily checkpoint not confirmed for %s/%s",
-                            account.account_number, month_key(month),
+                            account_log_id(account.account_number), month_key(month),
                         )
-                except Exception:
-                    _LOGGER.exception(
-                        "Historical daily unit failed for %s/%s; remains retryable",
-                        account.account_number, month_key(month),
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Historical daily unit failed for %s/%s; remains retryable: %s",
+                        account_log_id(account.account_number), month_key(month), type(err).__name__,
                     )
             for year in bills:
                 try:
@@ -257,7 +258,7 @@ class HistoryCoordinator:
                     if not await self.history_store.async_ensure_persisted():
                         _LOGGER.warning(
                             "Historical bill facts not durable for %s/%s",
-                            account.account_number, year,
+                            account_log_id(account.account_number), year,
                         )
                         continue
                     if not await self.history_store.async_complete_history_unit(
@@ -265,10 +266,10 @@ class HistoryCoordinator:
                     ):
                         _LOGGER.warning(
                             "Historical bill checkpoint not confirmed for %s/%s",
-                            account.account_number, year,
+                            account_log_id(account.account_number), year,
                         )
-                except Exception:
-                    _LOGGER.exception(
-                        "Historical bill unit failed for %s/%s; remains retryable",
-                        account.account_number, year,
+                except Exception as err:
+                    _LOGGER.warning(
+                        "Historical bill unit failed for %s/%s; remains retryable: %s",
+                        account_log_id(account.account_number), year, type(err).__name__,
                     )

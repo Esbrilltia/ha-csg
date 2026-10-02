@@ -34,7 +34,7 @@ from custom_components.csg.history_store import CSGHistoryStore
 def platform_world(recorder_world, monkeypatch):
     """No replacement Core setup/unload, platform forwarding or entity removal."""
     @asynccontextmanager
-    async def world(*, before_setup=None):
+    async def world(*, before_setup=None, sync_on_setup=True):
         async with recorder_world() as base:
             await base.bridge.async_shutdown()
             hass, entry = base.hass, base.entry
@@ -63,7 +63,8 @@ def platform_world(recorder_world, monkeypatch):
             assert entry.state is ConfigEntryState.LOADED
             await hass.async_block_till_done()
             runtime = hass.data[DOMAIN][entry.entry_id]
-            await base.sync(runtime["energy_statistics_bridge"])
+            if sync_on_setup:
+                await base.sync(runtime["energy_statistics_bridge"])
             entities = {entity.entity_id for entity in hass.data[ha_sensor.DATA_COMPONENT].entities}
             assert len(entities) == 16
             base.cloud = cloud

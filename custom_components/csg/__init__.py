@@ -50,7 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         logged_in = await hass.async_add_executor_job(client.verify_login)
     except (CSGAPIError, RequestException) as err:
-        raise ConfigEntryNotReady(f"Unable to contact China Southern Power Grid: {err}") from err
+        raise ConfigEntryNotReady(f"Unable to contact China Southern Power Grid: {type(err).__name__}") from err
     if not logged_in:
         raise ConfigEntryAuthFailed("Login expired")
 
@@ -75,7 +75,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.debug(f"Unloading entry: {entry.title}")
+    _LOGGER.debug("Unloading CSG entry %s", entry.entry_id)
     runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
     bridge = runtime.get("energy_statistics_bridge")
     if bridge is not None:
@@ -101,14 +101,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await bridge.async_shutdown()
         except Exception:
             _LOGGER.warning(
-                "CSG energy statistics final materialization did not complete; "
+                "CSG external statistics final materialization did not complete; "
                 "HistoryStore facts remain authoritative and a future enabled Bridge sync can retry",
                 exc_info=True,
             )
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
-    _LOGGER.debug(f"Unload platforms for entry: {entry.title}, success: {unload_ok}")
+    _LOGGER.debug("Unload CSG platforms for entry %s, success: %s", entry.entry_id, unload_ok)
     return unload_ok
 
 
@@ -116,7 +116,7 @@ async def async_remove_config_entry_device(
     hass: HomeAssistant, config_entry: ConfigEntry, device_entry: DeviceEntry
 ) -> bool:
     """Remove device"""
-    _LOGGER.info(f"removing device {device_entry.name}")
+    _LOGGER.info("Removing CSG account device")
     account_num = list(device_entry.identifiers)[0][1]
 
     # remove entities
@@ -147,17 +147,13 @@ async def async_remove_config_entry_device(
         config_entry,
         data=new_data,
     )
-    _LOGGER.info(
-        "Removed ele account from %s: %s",
-        config_entry.data[CONF_USERNAME],
-        account_num,
-    )
+    _LOGGER.info("Removed a linked electricity account")
     return True
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle removal of an entry."""
-    _LOGGER.info("Removing entry: account %s", entry.data[CONF_USERNAME])
+    _LOGGER.info("Removing CSG entry %s", entry.entry_id)
 
     # logout
     def client_logout():
@@ -168,6 +164,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         )
         if client.verify_login():
             client.logout(entry.data[CONF_LOGIN_TYPE])
-            _LOGGER.info("CSG account %s logged out", entry.data[CONF_USERNAME])
+            _LOGGER.info("CSG account logged out")
 
     await hass.async_add_executor_job(client_logout)

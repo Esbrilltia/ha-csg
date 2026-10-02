@@ -31,7 +31,7 @@ def test_options_flow_shows_translated_menu() -> None:
 
     assert result == {
         "step_id": "init",
-        "menu_options": ["add_account", "settings"],
+        "menu_options": ["add_account", "settings", "tariff_account"],
     }
 
 
