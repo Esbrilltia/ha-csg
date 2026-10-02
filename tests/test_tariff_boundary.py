@@ -10,8 +10,8 @@ from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.helpers import event
 from homeassistant.util import dt as dt_util
 
-from custom_components.csg import sensor
-from custom_components.csg.const import CONF_ELE_ACCOUNTS, CONF_SETTINGS, CONF_TARIFF_PROFILES
+from custom_components.csg_plus import sensor
+from custom_components.csg_plus.const import CONF_ELE_ACCOUNTS, CONF_SETTINGS, CONF_TARIFF_PROFILES
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 from test_energy_statistics_recovery import platform_world
 

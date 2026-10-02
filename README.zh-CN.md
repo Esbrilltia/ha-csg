@@ -1,11 +1,15 @@
-# ha-csg
+# CSG Statistics Plus
 
 [简体中文](README.zh-CN.md) | [English](README.md)
 
-适用于中国南方电网用电数据的 Home Assistant 自定义集成。
+**CSG Plus**（项目名 `ha-csg-plus`）是适用于中国南方电网用电数据的独立
+Home Assistant 自定义集成。**Home Assistant domain：`csg_plus`。**
+本轮候选版本为 **`3.0.0-beta.1`**。
 
-本项目 Fork 自 [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat)。
-它使用 `csg` 集成域，并重新设计实体，使其符合 Home Assistant 长期统计和能源面板的语义。
+本项目基于 [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg) 与
+[CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat)。
+这是社区项目，不代表 Home Assistant 或南方电网官方背书。它可与上游 `csg`
+短期共存，两者的配置、Registry 身份、私有存储和 Recorder 来源独立。
 
 ## 功能
 
@@ -42,7 +46,7 @@ charge 输入时，最近结算日费用和本月费用保持 unavailable。上�
 查询快照使用 `measurement` 或不设置状态类。“能源累计用电量”和“已结算累计费用”
 已退役，不再创建；不会用另一种 `total_increasing` sensor 替代它们。
 
-## 正式能源统计与 M5 升级迁移
+## 外部电量统计
 
 正式 Energy consumption 路径为：
 
@@ -51,28 +55,26 @@ CSG daily facts → HistoryStore → EnergyStatisticsBridge
 → Home Assistant Recorder external statistics → Energy Dashboard
 ```
 
-**选项 → 参数设置 → 启用外部电量与费用统计** 默认**开启**。旧 entry 缺少此字段时，升级后
-视为启用；新 entry 默认启用。用户明确设置的 **False** 会继续保留，该关闭状态下
+**选项 → 参数设置 → 启用外部电量与费用统计** 默认**开启**。缺少此字段的 entry 和
+新 entry 默认启用。用户明确设置的 **False** 会继续保留，该关闭状态下
 集成不执行任何 Recorder 读取或写入。每个缴费账号的稳定标识是
-`csg:energy_<full SHA-256>`，显示名称为不含敏感信息的 `CSG energy <前 8 位 hex>`。
+`csg_plus:energy_<full SHA-256>`，显示名称为不含敏感信息的 `CSG Plus energy <前 8 位 hex>`。
 完整 SHA-256 由缴费户号生成。
 
 集成不自动修改能源面板 preferences。请对每个账户手动操作：
 
 1. 确认新 external statistic 已生成。
-2. 将对应账户的消费来源切换到 `csg:energy_<full SHA-256>`。
-3. HA 全局币种为 **CNY** 时，将费用来源 `stat_cost` 设为 `csg:cost_<同一完整 SHA-256>`。
+2. 将对应账户的消费来源切换到 `csg_plus:energy_<full SHA-256>`。
+3. HA 全局币种为 **CNY** 时，将费用来源 `stat_cost` 设为 `csg_plus:cost_<同一完整 SHA-256>`。
 4. 同一账户不要同时配置旧 Energy total 和新 external statistic，否则会重复统计。
 
 旧 Energy total / Settled cost total 不再由集成创建。Home Assistant 可能保留
 unavailable/restored registry state，这是允许的。旧 entity registry 项和 Recorder
-history/statistics 不会自动删除。旧 `csg.energy_ledger.<entry_id>` Store 留在磁盘上，
-成为 inert legacy data：不读取、不写入、不迁移、不删除。是否清理这些旧数据属于
-后续独立的用户操作。
-
-M6 新增正式月账费用统计和显式当前电价配置，固定实现基线为 M5 merge：
-`6c193acb50fe365c3adb4c40a040bb2b2a449ea1`。旧 ledger、插值和 correction 路径
-继续保持退役，Settled cost total 不再是支持的费用来源。
+history/statistics 不会自动删除。CSG Plus 只使用 `csg_plus.history_store.<entry_id>`。
+`csg.energy_ledger.<entry_id>` 和 `csg.history_store.<entry_id>` 都是另一个 domain 的
+私有 Store，CSG Plus 不读取、不改写、不迁移、不删除。旧 `csg:energy_*` 和
+`csg:cost_*` 也保持独立且不受影响。是否清理旧数据属于后续独立的用户操作。
+旧 ledger、插值和 correction 路径继续保持退役，Settled cost total 不是支持的费用来源。
 
 每个已发布日的真实电量（包括真实零值）在 `Asia/Shanghai` 当日零点生成一个统计点；
 缺日保持缺失，不制造小时分布，因此小时图可能稀疏。月账单与对账结果不会改写日电量。
@@ -87,9 +89,9 @@ M6 新增正式月账费用统计和显式当前电价配置，固定实现基�
 
 费用唯一事实源是 `getAnalyzeFeeDetails → get_year_month_stats()` 的
 `actualTotalAmount → HistoryStore.monthly_bills[].cost_cny`。同一 Bridge 将它物化为
-独立的 `csg:cost_<SHA-256(account_number) 完整值>`，显示名为
-`CSG cost <前 8 位 hash>`，不含户号、姓名或地址。采用 HA Core 2026.9.3 第一方
-Opower 的 external cost metadata：`source=csg`、`mean_type=NONE`、`has_sum=True`、
+独立的 `csg_plus:cost_<SHA-256(account_number) 完整值>`，显示名为
+`CSG Plus cost <前 8 位 hash>`，不含户号、姓名或地址。采用 HA Core 2026.9.3 第一方
+Opower 的 external cost metadata：`source=csg_plus`、`mean_type=NONE`、`has_sum=True`、
 `unit_class=None`、`unit_of_measurement=None`。金额始终是 **CNY**。
 
 HA Energy 使用单一全局币种。如果不是 **CNY**，日电量统计仍正常，集成对费用统计
@@ -120,9 +122,9 @@ tariff × daily kWh 制造日电费。最近结算日费用、本月费用仍然
 production 不调用旧 daily-cost / yesterday API。集成不写 `.storage/energy`，
 不调用 Energy preferences API 自动配置；请手动配对同账户的 energy / cost ID。
 
-早期实验性 M6 的月初 anchor rows 不会自动搬移或清除。如已有 cost statistic 包含
-这些 rows，Bridge 会报告 unexpected-row anomaly 并保留数据；该 statistic 恢复
-按新约定收敛前，需要另行决定迁移方式。
+已有 `csg_plus` cost statistic 中的异常 rows，包括早期实验性月初 anchor，
+不会自动搬移或清除。Bridge 会报告 anomaly 并保留数据。
+CSG Plus 不检查或迁移旧 domain 的 cost statistic。
 
 ## 显式广州当前电价配置
 
@@ -160,7 +162,7 @@ Decimal component model 为 **0.5802 × 时段比价 + 0.00866875 CNY/kWh**：�
 不会把包含基金及附加的平段价直接乘峰段比价。数值累计及阈值比较使用 `Decimal(str(value))`。
 
 上海时段为谷 **00:00–08:00**，峰 **10:00–12:00、14:00–19:00**，其余为平。
-当前单价 sensor 保留原 `current_ladder_tariff` unique ID，单位改为 **CNY/kWh**，
+当前单价 sensor 保留 `current_ladder_tariff` 后缀，完整身份为 `csg_plus.<account>.<suffix>`，单位为 **CNY/kWh**，
 不使用 MONETARY device class 或 TOTAL 状态类。峰谷边界从缓存电量本地刷新，不额外
 请求 daily API。仅当月初至最新 observed/published date 每天都有合法、有限、非负的
 kWh 时，才展示确定的阶梯起始日。daily client 将已出现日期但读数无效的行保留为
@@ -183,20 +185,40 @@ kWh，HistoryStore 不将其保存为 fact；无效昨日读数保持 unavailabl
 
 ## 安装
 
-通过 [HACS](https://hacs.xyz/) 安装，或从 [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg/releases) 下载发行版本。
+正式审计基线为 Home Assistant Core **`2026.9.3`** / Python **`3.14.2`**，
+HACS metadata 的最低 HA 版本也为 **`2026.9.3`**。其他 Core 版本未经测试，
+不宣称更广兼容范围。
 
-当前开发和测试基线为 Home Assistant Core `2026.9.3` / Python `3.14.2`。其他 Home Assistant 版本可能可用，但未经本项目测试，不属于保证的兼容范围。
+独立版本发布后，在 [HACS](https://hacs.xyz/) 中添加此仓库为 **Integration** 类别的
+自定义仓库，安装 **CSG Statistics Plus** 并重启 Home Assistant。
+安装包只包含一个集成：`custom_components/csg_plus`。
 
-## 升级到 v2 的破坏性变更
+当前仓库为 [Esbrilltia/ha-csg](https://github.com/Esbrilltia/ha-csg)，预定最终仓库为
+[Esbrilltia/ha-csg-plus](https://github.com/Esbrilltia/ha-csg-plus/)，
+[问题反馈入口](https://github.com/Esbrilltia/ha-csg-plus/issues) 随之变更。
+这些最终 URL 可能需待 M7 审计通过、另行授权仓库 rename 后才可用。
+本里程碑准备 `3.0.0-beta.1` 包装，不创建 tag、release 或发布 HACS beta。
 
-版本 2 将集成域从 `china_southern_power_grid_stat` 改为 `csg`，不提供自动迁移。
+## 从上游 csg 迁移
 
-1. 删除旧集成。
-2. 重启 Home Assistant。
-3. 重新添加 **CSG** 并配置账户。
-4. 按上述 M5 迁移说明配置 external statistic。
+`csg_plus` 是新的独立集成，不会就地改名或迁移已有 `csg` config entry。
+需要重新登录，并重新选择 tariff profile 和 history options。同一虚构或真实缴费户号
+可在两个 domain 中短期共存，不覆盖彼此设备、实体、Store 或统计。
+新设备名称为 `CSG Plus Account-...`，manufacturer 仍为 `CSG`。
+可见实体名称相似时，HA 可能自动追加 entity_id 后缀。
 
-集成域变更与 M5 退役属于不同迁移；历史数据不会自动清理。
+1. 独立版本可用后，通过 HACS 安装 **CSG Statistics Plus**。
+2. 添加新的 **CSG Statistics Plus**（`csg_plus`）集成，重新登录并选择所需电价与历史选项。
+3. 确认能够正常登录并抓取真实南网数据。
+4. 确认实体正常显示，没有整体 unavailable。
+5. 确认 `csg_plus:energy_*` 已正常产生。
+6. 在 Energy Dashboard 手工将消费来源切换到新的 energy statistic。
+7. 如启用正式费用，确认 HA 币种为 **CNY**，再选择 `csg_plus:cost_*`。
+8. 确认新来源正常后，即可卸载旧 `csg` 集成。
+
+**Energy Dashboard 仍引用旧 Energy total 或其他旧消费来源时，不应先卸载旧 `csg`。**
+不要求长期并行运行，同一消费不要同时配置两个来源。CSG Plus 不自动写 Energy
+preferences，也不自动清理旧数据。
 
 ## 更新间隔
 
@@ -205,9 +227,18 @@ kWh，HistoryStore 不将其保存为 fact；无效昨日读数保持 unavailabl
 
 ## API 实现
 
-[`custom_components/csg/csg_client/__init__.py`](custom_components/csg/csg_client/__init__.py) 实现了南网 App API，也可独立使用。基本示例见 `csg_client_demo.py`。
+[`custom_components/csg_plus/csg_client/__init__.py`](custom_components/csg_plus/csg_client/__init__.py) 实现了南网 App API，也可独立使用。基本示例见 `csg_client_demo.py`。
 
 ## 致谢
 
+- [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg)，上游 `csg` 集成及 v2 基础。
 - [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat)，上游项目。
 - [lyylyylyylyy](https://github.com/lyylyylyylyy)，上游短信验证码登录支持。
+
+保留原作者贡献和现有 [GPL-3.0 许可](LICENSE)。`brand/icon.png`（256 × 256）与
+`brand/icon@2x.png`（512 × 512）原样来自 [home-assistant/brands 固定 commit
+792a7f45a882bc5f3a01b661acdfd3bba4ac98e4](https://github.com/home-assistant/brands/tree/792a7f45a882bc5f3a01b661acdfd3bba4ac98e4/custom_integrations/china_southern_power_grid_stat)
+的 `custom_integrations/china_southern_power_grid_stat` 路径。
+对应 Git blob SHA 分别为 `e62fa5453c7119bd7b0987b101558c8a2f2c564b` 与
+`3ce6c56969aa36f96f0a82bce4808201662cbe7d`。复用历史集成图标不代表 Home Assistant
+或南方电网官方背书。

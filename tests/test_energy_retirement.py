@@ -19,14 +19,14 @@ from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_import_statistics, statistics_during_period
 from homeassistant.helpers import entity_registry as er, storage as ha_storage
 
-from custom_components.csg import energy_statistics as energy, sensor
-from custom_components.csg.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, DOMAIN
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge
+from custom_components.csg_plus import energy_statistics as energy, sensor
+from custom_components.csg_plus.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, DOMAIN
+from custom_components.csg_plus.energy_statistics import EnergyStatisticsBridge
 from test_energy_statistics import rig
 from test_energy_statistics_recorder import ACCOUNT, START, recorder_world
 from test_energy_statistics_recovery import platform_world
 
-ROOT = Path(__file__).parents[1] / "custom_components" / "csg"
+ROOT = Path(__file__).parents[1] / "custom_components" / "csg_plus"
 EXPECTED_SUFFIXES = {
     "yesterday_kwh", "balance", "arrears", "current_ladder",
     "current_ladder_remaining_kwh", "current_ladder_tariff",
@@ -120,7 +120,7 @@ def test_real_sensor_entity_set_and_only_yesterday_timer(platform_world, monkeyp
     async def scenario():
         async with platform_world(before_setup=configure) as world:
             actual = {entity.unique_id for entity in world.component.entities}
-            assert actual == {f"csg.{ACCOUNT}.{suffix}" for suffix in EXPECTED_SUFFIXES}
+            assert actual == {f"csg_plus.{ACCOUNT}.{suffix}" for suffix in EXPECTED_SUFFIXES}
             assert not any(entity.state_class and entity.state_class.value == "total_increasing" for entity in world.component.entities)
             assert intervals == [dt.timedelta(minutes=1)]
             runtime = world.runtime()
@@ -155,7 +155,7 @@ def test_real_legacy_store_bytes_registry_and_recorder_history_untouched(platfor
             ("settled_cost_total", 123, "CNY", None),
         ):
             registered = registry.async_get_or_create(
-                "sensor", DOMAIN, f"csg.{ACCOUNT}.{suffix}",
+                "sensor", DOMAIN, f"csg_plus.{ACCOUNT}.{suffix}",
                 suggested_object_id=f"synthetic_legacy_{suffix}", config_entry=base.entry,
             )
             ids.append(registered.entity_id)
@@ -194,7 +194,7 @@ def test_real_legacy_store_bytes_registry_and_recorder_history_untouched(platfor
         assert await legacy["read"]() == legacy["rows"]
         registry = er.async_get(world.hass)
         for suffix, entity_id in zip(("energy_total", "settled_cost_total"), legacy["ids"], strict=True):
-            assert registry.async_get_entity_id("sensor", DOMAIN, f"csg.{ACCOUNT}.{suffix}") == entity_id
+            assert registry.async_get_entity_id("sensor", DOMAIN, f"csg_plus.{ACCOUNT}.{suffix}") == entity_id
 
     async def scenario():
         async with platform_world(before_setup=seed) as world:

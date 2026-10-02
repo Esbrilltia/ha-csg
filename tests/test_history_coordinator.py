@@ -17,16 +17,16 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 from requests import RequestException
 
-import custom_components.csg as integration
-from custom_components.csg import history_coordinator as module, history_store as store_module, sensor
-from custom_components.csg.const import (
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import history_coordinator as module, history_store as store_module, sensor
+from custom_components.csg_plus.const import (
     CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
     CONF_UPDATE_INTERVAL, DOMAIN, SUFFIX_LAST_MONTH_COST,
 )
-from custom_components.csg.csg_client import CSGAPIError, CSGElectricityAccount
-from custom_components.csg.history_coordinator import HistoryCoordinator, historical_months
-from custom_components.csg.history_helpers import month_key, parse_history_start_month
-from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg_plus.csg_client import CSGAPIError, CSGElectricityAccount
+from custom_components.csg_plus.history_coordinator import HistoryCoordinator, historical_months
+from custom_components.csg_plus.history_helpers import month_key, parse_history_start_month
+from custom_components.csg_plus.history_store import CSGHistoryStore
 from test_history_store_integration import rig as recent_rig
 
 

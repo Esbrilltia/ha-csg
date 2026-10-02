@@ -13,7 +13,7 @@ import pytest
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from custom_components.csg.const import (
+from custom_components.csg_plus.const import (
     SUFFIX_BAL,
     SUFFIX_LAST_MONTH_COST,
     SUFFIX_LAST_YEAR_COST,
@@ -22,9 +22,9 @@ from custom_components.csg.const import (
     SUFFIX_THIS_YEAR_KWH,
     SUFFIX_YESTERDAY_KWH,
 )
-from custom_components.csg.energy_statistics import build_statistics
-from custom_components.csg.csg_client import CSGAPIError
-from custom_components.csg.sensor import (
+from custom_components.csg_plus.energy_statistics import build_statistics
+from custom_components.csg_plus.csg_client import CSGAPIError
+from custom_components.csg_plus.sensor import (
     REALTIME_DESCRIPTIONS,
     BillingCoordinator,
     CSGSensor,
@@ -117,7 +117,7 @@ def test_a6_midnight_guard_invalidates_locally_and_cleans_up_timers(monkeypatch)
     # callback, state calculation and cancellation methods.
     monkeypatch.setattr(CoordinatorEntity, "async_added_to_hass", AsyncMock())
     monkeypatch.setattr(CoordinatorEntity, "async_will_remove_from_hass", AsyncMock())
-    monkeypatch.setattr("custom_components.csg.sensor.async_track_time_interval", track)
+    monkeypatch.setattr("custom_components.csg_plus.sensor.async_track_time_interval", track)
     yesterday.hass = balance.hass = object()
     yesterday.async_write_ha_state = lambda: writes.append(yesterday.native_value)
     assert yesterday.available and yesterday.native_value == 5

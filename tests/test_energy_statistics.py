@@ -18,10 +18,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util.unit_conversion import EnergyConverter
 from homeassistant.util import dt as dt_util
 
-from custom_components.csg import energy_statistics as module
-from custom_components.csg.const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
-from custom_components.csg.csg_client import CSGElectricityAccount
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge, build_statistics, statistic_metadata
+from custom_components.csg_plus import energy_statistics as module
+from custom_components.csg_plus.const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
+from custom_components.csg_plus.csg_client import CSGElectricityAccount
+from custom_components.csg_plus.energy_statistics import EnergyStatisticsBridge, build_statistics, statistic_metadata
 from test_history_store import make_store
 
 ACCOUNT = "fictional-energy-account"
@@ -42,8 +42,8 @@ def test_stable_identity_and_exact_metadata():
     metadata = statistic_metadata(ACCOUNT)
     digest = hashlib.sha256(ACCOUNT.encode("utf-8")).hexdigest()
     assert metadata == {
-        "source": "csg", "statistic_id": f"csg:energy_{digest}",
-        "name": f"CSG energy {digest[:8]}", "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
+        "source": "csg_plus", "statistic_id": f"csg_plus:energy_{digest}",
+        "name": f"CSG Plus energy {digest[:8]}", "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,
         "unit_class": EnergyConverter.UNIT_CLASS, "mean_type": StatisticMeanType.NONE,
         "has_sum": True,
     }

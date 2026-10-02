@@ -13,14 +13,14 @@ import pytest
 from homeassistant.components.sensor import SensorStateClass
 from homeassistant.const import STATE_UNAVAILABLE
 
-from custom_components.csg.const import (
+from custom_components.csg_plus.const import (
     ATTR_KEY_SETTLEMENT_DATE,
     SUFFIX_LATEST_DAY_COST,
     SUFFIX_LATEST_DAY_KWH,
     SUFFIX_YESTERDAY_KWH,
 )
-from custom_components.csg.csg_client import CSGAPIError
-from custom_components.csg.sensor import (
+from custom_components.csg_plus.csg_client import CSGAPIError
+from custom_components.csg_plus.sensor import (
     BILLING_DESCRIPTIONS,
     CURRENT_DESCRIPTIONS,
     REALTIME_DESCRIPTIONS,
@@ -43,7 +43,7 @@ def run(coroutine):
 def stable_default_clock(monkeypatch):
     """Keep daily snapshots independent of the calendar day CI runs."""
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 1, tzinfo=dt.UTC),
     )
 
@@ -59,7 +59,7 @@ def test_energy_sensor_descriptions_have_correct_statistics_semantics() -> None:
 
 def freeze_utcnow(monkeypatch, moment: dt.datetime) -> None:
     """Pin the CSG calendar clock for daily snapshots."""
-    monkeypatch.setattr("custom_components.csg.sensor.dt_util.utcnow", lambda: moment)
+    monkeypatch.setattr("custom_components.csg_plus.sensor.dt_util.utcnow", lambda: moment)
 
 
 def test_sensor_uses_initial_coordinator_data_and_clears_missing_values() -> None:
@@ -80,7 +80,7 @@ def test_sensor_uses_initial_coordinator_data_and_clears_missing_values() -> Non
 def test_csg_today_uses_china_standard_time(monkeypatch) -> None:
     """CSG API dates must not depend on Home Assistant's configured timezone."""
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 3, 16, tzinfo=dt.UTC),
     )
 
@@ -226,11 +226,11 @@ def capture_notifications(monkeypatch) -> tuple[list[str], list[str]]:
     created: list[str] = []
     dismissed: list[str] = []
     monkeypatch.setattr(
-        "custom_components.csg.sensor.persistent_notification.async_create",
+        "custom_components.csg_plus.sensor.persistent_notification.async_create",
         lambda hass, message, title=None, notification_id=None: created.append(notification_id),
     )
     monkeypatch.setattr(
-        "custom_components.csg.sensor.persistent_notification.async_dismiss",
+        "custom_components.csg_plus.sensor.persistent_notification.async_dismiss",
         lambda hass, notification_id: dismissed.append(notification_id),
     )
     return created, dismissed
@@ -261,7 +261,7 @@ def test_realtime_coordinator_treats_missing_yesterday_usage_as_a_gap(monkeypatc
     caplog.set_level(logging.DEBUG)
     created, dismissed = capture_notifications(monkeypatch)
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 4, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     coordinator = make_realtime_coordinator(FakeUsageClient(None))
@@ -274,7 +274,7 @@ def test_realtime_coordinator_treats_missing_yesterday_usage_as_a_gap(monkeypatc
     assert warning_messages(caplog) == []
     assert data["account"][_KEY_YESTERDAY_DATE] is None
     # A successful request clears any earlier usage failure.
-    assert notification_ids("usage", dismissed) == ["csg_entry_usage_account"]
+    assert notification_ids("usage", dismissed) == ["csg_plus_entry_usage_account"]
 
     yesterday = CSGSensor(
         SimpleNamespace(data=data, last_update_success=True),
@@ -289,7 +289,7 @@ def test_realtime_coordinator_notifies_a_failed_yesterday_request(monkeypatch, c
     caplog.set_level(logging.DEBUG)
     created, dismissed = capture_notifications(monkeypatch)
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 4, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     coordinator = make_realtime_coordinator(FakeUsageClient(CSGAPIError("boom")))
@@ -298,7 +298,7 @@ def test_realtime_coordinator_notifies_a_failed_yesterday_request(monkeypatch, c
 
     assert data["account"][SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
     assert "energy_total" not in data["account"]
-    assert notification_ids("usage", created) == ["csg_entry_usage_account"] * 2
+    assert notification_ids("usage", created) == ["csg_plus_entry_usage_account"] * 2
     assert notification_ids("usage", dismissed) == []
     assert all("Could not update daily usage" in message for message in warning_messages(caplog))
     assert len(warning_messages(caplog)) == 2
@@ -309,7 +309,7 @@ def test_realtime_coordinator_records_a_published_yesterday_reading(monkeypatch,
     caplog.set_level(logging.DEBUG)
     created, dismissed = capture_notifications(monkeypatch)
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 2, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     coordinator = make_realtime_coordinator(FakeUsageClient(25))
@@ -320,7 +320,7 @@ def test_realtime_coordinator_records_a_published_yesterday_reading(monkeypatch,
     assert "energy_total" not in data["account"]
     assert created == []
     assert warning_messages(caplog) == []
-    assert notification_ids("usage", dismissed) == ["csg_entry_usage_account"]
+    assert notification_ids("usage", dismissed) == ["csg_plus_entry_usage_account"]
 
 
 class FakeRealtimeClient(FakeUsageClient):
@@ -362,7 +362,7 @@ class FakeRealtimeCoordinator(RealtimeCoordinator):
 def _patch_utcnow(monkeypatch) -> None:
     """Pin the coordinator's clock so "yesterday" is a fixed day."""
     monkeypatch.setattr(
-        "custom_components.csg.sensor.dt_util.utcnow",
+        "custom_components.csg_plus.sensor.dt_util.utcnow",
         lambda: dt.datetime(2026, 8, 3, 4, tzinfo=dt.UTC),
     )
 

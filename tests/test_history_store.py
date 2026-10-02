@@ -16,8 +16,8 @@ from homeassistant.helpers import storage as ha_storage
 from homeassistant.util import json as json_util
 from homeassistant.util.file import WriteError
 
-import custom_components.csg.history_store as history_store_module
-from custom_components.csg.history_store import CSGHistoryStore
+import custom_components.csg_plus.history_store as history_store_module
+from custom_components.csg_plus.history_store import CSGHistoryStore
 
 
 class MemoryStore:

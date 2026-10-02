@@ -14,8 +14,8 @@ from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import valid_statistic_id
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.csg.cost_statistics import build_cost_statistics, cost_statistic_metadata
-from custom_components.csg.energy_statistics import _different_suffix, statistic_metadata
+from custom_components.csg_plus.cost_statistics import build_cost_statistics, cost_statistic_metadata
+from custom_components.csg_plus.energy_statistics import _different_suffix, statistic_metadata
 from test_history_store import make_store
 
 ACCOUNT = "fictional-cost-account"
@@ -34,11 +34,11 @@ def test_cost_identity_and_metadata_match_core_opower_without_sensitive_labels()
     digest = hashlib.sha256(ACCOUNT.encode()).hexdigest()
     metadata = cost_statistic_metadata(ACCOUNT)
     assert metadata == {
-        "source": "csg", "statistic_id": f"csg:cost_{digest}",
-        "name": f"CSG cost {digest[:8]}", "unit_of_measurement": None,
+        "source": "csg_plus", "statistic_id": f"csg_plus:cost_{digest}",
+        "name": f"CSG Plus cost {digest[:8]}", "unit_of_measurement": None,
         "unit_class": None, "mean_type": StatisticMeanType.NONE, "has_sum": True,
     }
-    assert statistic_metadata(ACCOUNT)["statistic_id"] == f"csg:energy_{digest}"
+    assert statistic_metadata(ACCOUNT)["statistic_id"] == f"csg_plus:energy_{digest}"
     assert valid_statistic_id(metadata["statistic_id"])
     assert ACCOUNT not in str(metadata)
 

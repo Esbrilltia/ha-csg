@@ -225,7 +225,7 @@ class CSGSensor(CoordinatorEntity, SensorEntity):
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={(DOMAIN, self._account)},
-            name=f"CSGAccount-{self._account}",
+            name=f"CSG Plus Account-{self._account}",
             manufacturer="CSG",
             model="CSG Virtual Electricity Meter",
         )
@@ -326,7 +326,7 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         persistent_notification.async_create(
             self.hass,
             f"CSG {kind} request for account {account} failed: {err}",
-            title="China Southern Power Grid update failed",
+            title="CSG Plus update failed",
             notification_id=f"{DOMAIN}_{self.entry.entry_id}_{kind}_{account}",
         )
 

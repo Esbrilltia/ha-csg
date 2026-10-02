@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import MappingProxyType, SimpleNamespace
 
-from custom_components.csg.const import (
+from custom_components.csg_plus.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_AUTH_TOKEN,
     CONF_ELE_ACCOUNTS,
@@ -13,8 +13,8 @@ from custom_components.csg.const import (
     CONF_UPDATE_INTERVAL,
     CONF_UPDATED_AT,
 )
-from custom_components.csg.csg_client import CSGElectricityAccount
-from custom_components.csg.config_flow import CSGOptionsFlowHandler
+from custom_components.csg_plus.csg_client import CSGElectricityAccount
+from custom_components.csg_plus.config_flow import CSGOptionsFlowHandler
 
 
 def run(coroutine):

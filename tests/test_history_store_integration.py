@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-import custom_components.csg as integration
-from custom_components.csg import history_store as history_module, sensor
-from custom_components.csg.const import (
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import history_store as history_module, sensor
+from custom_components.csg_plus.const import (
     ATTR_KEY_MONTH_BILLING_DELAY,
     ATTR_KEY_SETTLEMENT_DATE,
     ATTR_KEY_YEAR_BILLING_DELAY,
@@ -42,9 +42,9 @@ from custom_components.csg.const import (
     SUFFIX_THIS_YEAR_KWH,
     SUFFIX_YESTERDAY_KWH,
 )
-from custom_components.csg.csg_client import CSGAPIError, CSGElectricityAccount
-from custom_components.csg.history_store import CSGHistoryStore
-from custom_components.csg.utils import account_log_id
+from custom_components.csg_plus.csg_client import CSGAPIError, CSGElectricityAccount
+from custom_components.csg_plus.history_store import CSGHistoryStore
+from custom_components.csg_plus.utils import account_log_id
 from homeassistant.const import CONF_USERNAME, STATE_UNAVAILABLE
 
 
@@ -195,7 +195,7 @@ def test_entry_loads_one_shared_store_before_platform_and_removes_only_runtime(r
         billing = rig.hass.data[DOMAIN][rig.entry.entry_id]["billing_coordinator"]
         assert billing.update_interval is None
         assert current.update_interval == dt.timedelta(hours=1)
-        assert all(entity.unique_id.startswith("csg.") for entity in entities)
+        assert all(entity.unique_id.startswith("csg_plus.") for entity in entities)
         stored_before = deepcopy(rig.persisted)
         assert await integration.async_unload_entry(rig.hass, rig.entry)
         assert rig.entry.entry_id not in rig.hass.data[DOMAIN]

@@ -372,7 +372,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def check_and_set_unique_id(self, username: str):
         """set unique id for the config entry, abort if already configured"""
         # TODO: username (mobile) may not be the best unique id
-        unique_id = f"CSG-{username}"
+        unique_id = f"{DOMAIN}-{username}"
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
@@ -408,7 +408,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # check if account already exists
 
         return self.async_create_entry(
-            title=f"CSG-{username}",
+            title=f"CSG Plus-{username}",
             data=data,
         )
 

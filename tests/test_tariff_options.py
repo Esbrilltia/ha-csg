@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from custom_components.csg.config_flow import CSGConfigFlow, CSGOptionsFlowHandler
-from custom_components.csg.const import (
+from custom_components.csg_plus.config_flow import CSGConfigFlow, CSGOptionsFlowHandler
+from custom_components.csg_plus.const import (
     CONF_ACCOUNT_NUMBER, CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_SETTINGS,
     CONF_TARIFF_PROFILES, CONF_UPDATE_INTERVAL,
 )
-from custom_components.csg.csg_client import CSGElectricityAccount
+from custom_components.csg_plus.csg_client import CSGElectricityAccount
 from test_tariff import CHOICES
 
 ACCOUNT = "fictional-options-account"

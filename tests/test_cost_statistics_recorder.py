@@ -11,8 +11,8 @@ import pytest
 from homeassistant.components.energy import data as energy_data, validate as energy_validate
 from homeassistant.components.recorder.statistics import async_add_external_statistics, get_metadata, statistics_during_period
 
-from custom_components.csg import energy_statistics as module
-from custom_components.csg.cost_statistics import build_cost_statistics, cost_statistic_metadata
+from custom_components.csg_plus import energy_statistics as module
+from custom_components.csg_plus.cost_statistics import build_cost_statistics, cost_statistic_metadata
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 
 

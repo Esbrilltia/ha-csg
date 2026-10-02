@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock
 import pytest
 from requests import RequestException
 
-import custom_components.csg as integration
-from custom_components.csg.const import CONF_ELE_ACCOUNTS, DOMAIN
-from custom_components.csg.csg_client import CSGElectricityAccount
+import custom_components.csg_plus as integration
+from custom_components.csg_plus.const import CONF_ELE_ACCOUNTS, DOMAIN
+from custom_components.csg_plus.csg_client import CSGElectricityAccount
 from test_history_coordinator import rig
 from test_history_store import make_store
 

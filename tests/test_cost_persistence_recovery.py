@@ -10,11 +10,11 @@ from unittest.mock import Mock
 import pytest
 from homeassistant.core import HomeAssistant
 
-import custom_components.csg as integration
-from custom_components.csg import energy_statistics as module
-from custom_components.csg.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
-from custom_components.csg.csg_client import CSGClient, JSON_KEY_YEAR_MONTH
-from custom_components.csg.history_store import CSGHistoryStore
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import energy_statistics as module
+from custom_components.csg_plus.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
+from custom_components.csg_plus.csg_client import CSGClient, JSON_KEY_YEAR_MONTH
+from custom_components.csg_plus.history_store import CSGHistoryStore
 from test_cost_statistics_lifecycle import cost_platform_world
 from test_cost_statistics_recorder import cost_world
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
@@ -126,7 +126,7 @@ def test_bill_save_failure_converges_via_normal_refresh_without_daily_or_externa
 
             await billing.async_refresh()
             await drain_requested_sync(world, bridge)
-            assert failed == (["public-save"] if failure == "public-save" else ["csg-history-storage"])
+            assert failed == (["public-save"] if failure == "public-save" else ["csg_plus-history-storage"])
             assert client.daily_calls == [(2026, 9), (2026, 8)]
             assert world.runtime() is runtime and runtime["energy_statistics_bridge"] is bridge
             assert billing.last_update_success

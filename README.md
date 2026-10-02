@@ -1,12 +1,16 @@
-# ha-csg
+# CSG Statistics Plus
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Home Assistant custom integration for China Southern Power Grid electricity data.
+**CSG Plus** (`ha-csg-plus`) is an independent Home Assistant custom integration
+for China Southern Power Grid electricity data. **Home Assistant domain: `csg_plus`.**
+Candidate version: **`3.0.0-beta.1`**.
 
-This project is a fork of [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat).
-It uses the `csg` integration domain and redesigns the entities for correct Home
-Assistant statistics and Energy dashboard use.
+This project builds on [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg)
+and [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat).
+It is a community project with no official endorsement from Home Assistant or
+China Southern Power Grid. It can coexist temporarily with upstream `csg`;
+configuration, registry identities, private storage and Recorder sources are separate.
 
 ## Features
 
@@ -47,7 +51,7 @@ Snapshots use `measurement` or no state class. The integration no longer
 creates **Energy total** or **Settled cost total**. There is no replacement
 `total_increasing` sensor.
 
-## Energy statistics and M5 migration
+## External energy statistics
 
 The supported Energy consumption path is:
 
@@ -57,17 +61,17 @@ CSG daily facts → HistoryStore → EnergyStatisticsBridge
 ```
 
 **Options → Settings → Enable external energy and cost statistics** defaults to **on**.
-Existing entries with no setting are enabled on upgrade, and new entries are
-enabled by default. An explicit **off** is preserved and performs no integration
+Entries with no setting and new entries are enabled by default.
+An explicit **off** is preserved and performs no integration
 Recorder reads or writes. Each payment account has a stable
-`csg:energy_<full SHA-256>` ID and a non-sensitive `CSG energy <8 hex digits>` name.
+`csg_plus:energy_<full SHA-256>` ID and a non-sensitive `CSG Plus energy <8 hex digits>` name.
 The full SHA-256 is derived from the payment account number.
 
 The integration does not modify Energy dashboard preferences. For each account:
 
 1. Confirm that the new external statistic has been generated.
-2. Manually switch its electricity consumption source to `csg:energy_<full SHA-256>`.
-3. With Home Assistant currency **CNY**, choose `csg:cost_<the same full SHA-256>`
+2. Manually switch its electricity consumption source to `csg_plus:energy_<full SHA-256>`.
+3. With Home Assistant currency **CNY**, choose `csg_plus:cost_<the same full SHA-256>`
    as the consumption source's tracked cost (`stat_cost`).
 4. Do not configure both the old Energy total and the new external statistic as
    consumption sources for the same account; that would double-count usage.
@@ -75,14 +79,13 @@ The integration does not modify Energy dashboard preferences. For each account:
 The old Energy total and Settled cost total are retired. Home Assistant may
 retain unavailable/restored registry placeholders. Existing entity registry
 entries and Recorder history/statistics are never automatically deleted.
-The old `csg.energy_ledger.<entry_id>` Store remains on disk as inert legacy
-data: it is not loaded, saved, migrated, or removed. Any later cleanup is a
-separate user operation.
-
-M6 adds official monthly cost statistics and explicit current tariff profiles.
-Its fixed base is the M5 merge `6c193acb50fe365c3adb4c40a040bb2b2a449ea1`.
-The retired ledger/interpolation/correction path remains inactive; Settled cost
-total is not a supported cost source.
+CSG Plus only uses `csg_plus.history_store.<entry_id>`. Both
+`csg.energy_ledger.<entry_id>` and `csg.history_store.<entry_id>` belong to the
+other domain and are never read, changed, migrated or deleted by CSG Plus.
+Old `csg:energy_*` and `csg:cost_*` statistics remain separate and untouched.
+Any later cleanup is a separate user operation. The retired ledger,
+interpolation and correction path remains inactive; Settled cost total is not
+a supported cost source.
 
 Statistics use each published day's actual kWh, including real zero, at midnight
 in `Asia/Shanghai`. Missing days stay absent. There is one daily aggregate point,
@@ -101,10 +104,10 @@ There is no destructive statistics cleanup feature.
 
 The only cost authority is `getAnalyzeFeeDetails → get_year_month_stats()`
 (`actualTotalAmount`) → `HistoryStore.monthly_bills[].cost_cny`. The same Bridge
-materializes a separate `csg:cost_<full SHA-256(account_number)>` statistic, named
-`CSG cost <first 8 hex digits>`. These statistics contain no account number,
+materializes a separate `csg_plus:cost_<full SHA-256(account_number)>` statistic, named
+`CSG Plus cost <first 8 hex digits>`. These statistics contain no account number,
 customer name or address. Core 2026.9.3's Opower external-cost metadata is used:
-`source=csg`, `mean_type=NONE`, `has_sum=True`, `unit_class=None`, and
+`source=csg_plus`, `mean_type=NONE`, `has_sum=True`, `unit_class=None`, and
 `unit_of_measurement=None`. Their monetary values are always **CNY**.
 
 Home Assistant Energy uses one global currency. When it is not **CNY**, energy
@@ -144,10 +147,10 @@ calls the retired daily-cost or yesterday API wrappers. The integration does
 not write `.storage/energy` or call Energy preferences APIs; users pair the
 consumption and cost IDs manually.
 
-Earlier experimental M6 rows anchored at month-start are not automatically
-moved or cleared. If an existing cost statistic contains those rows, the Bridge
-reports an unexpected-row anomaly and preserves them; migration requires a
-separate decision before that statistic can converge to the new convention.
+Unexpected rows within an existing `csg_plus` cost statistic, including earlier
+experimental month-start anchors, are not moved or cleared. The Bridge reports
+an anomaly and preserves them. Old-domain cost statistics are never inspected
+or migrated by CSG Plus.
 
 ## Explicit current Guangzhou tariff profiles
 
@@ -194,7 +197,7 @@ and threshold comparisons use `Decimal(str(value))`.
 
 Asia/Shanghai periods are valley **00:00–08:00**, peak **10:00–12:00** and
 **14:00–19:00**, flat otherwise. The current tariff sensor keeps its original
-`current_ladder_tariff` unique ID and now reports **CNY/kWh**, without a monetary
+`current_ladder_tariff` suffix under `csg_plus.<account>.<suffix>` and reports **CNY/kWh**, without a monetary
 device class or total state class. TOU boundaries update locally from cached
 usage, without additional daily API calls. A ladder start date is shown only
 when every date from month start through the newest observed/published day has
@@ -221,23 +224,46 @@ the current TOU policy. Government websites are not queried at runtime.
 
 ## Installation
 
-Install through [HACS](https://hacs.xyz/) or download a release from
-[orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg/releases).
+The audited baseline is Home Assistant Core **`2026.9.3`** / Python **`3.14.2`**.
+HACS declares **`2026.9.3`** as the minimum HA version. Other Core versions have
+not been tested; no wider compatibility is claimed.
 
-The current development and test baseline is Home Assistant Core `2026.9.3` / Python `3.14.2`. Other Home Assistant versions may work, but are unsupported and untested by this project.
+After a standalone build is published, add this repository to
+[HACS](https://hacs.xyz/) as a custom repository with category **Integration**,
+then install **CSG Statistics Plus** and restart Home Assistant. The package
+contains one integration: `custom_components/csg_plus`.
 
-## Breaking upgrade to v2
+The current repository is [Esbrilltia/ha-csg](https://github.com/Esbrilltia/ha-csg).
+The intended canonical repository is
+[Esbrilltia/ha-csg-plus](https://github.com/Esbrilltia/ha-csg-plus/), with
+[its issue tracker](https://github.com/Esbrilltia/ha-csg-plus/issues).
+Those final URLs may not be available until the separately authorized repository
+rename after M7 audit. This milestone prepares `3.0.0-beta.1` packaging and does
+not publish a tag, release or HACS beta.
 
-Version 2 changes the integration domain from
-`china_southern_power_grid_stat` to `csg`. There is no automatic migration.
+## Moving from upstream csg
 
-1. Remove the old integration.
-2. Restart Home Assistant.
-3. Add **CSG** again and configure the account.
-4. Configure the external statistic as described in the M5 migration above.
+`csg_plus` is a new integration. It does not rename or migrate an existing
+`csg` config entry. Login, tariff profile and history options must be configured
+again. The same payment account can temporarily exist in both domains without
+overwriting devices, entities, Stores or statistics. New devices are named
+`CSG Plus Account-...`; the manufacturer remains `CSG`. Similar entity names may
+receive an automatic Home Assistant entity-ID suffix.
 
-This domain change is separate from M5 retirement; historical data cleanup is
-not automatic.
+1. Install **CSG Statistics Plus** through HACS once its standalone build is available.
+2. Add the new **CSG Statistics Plus** (`csg_plus`) integration, sign in again,
+   and select the required tariff profile and history options.
+3. Confirm login and retrieval of real China Southern Power Grid data work.
+4. Confirm the entities display normally and are not all unavailable.
+5. Confirm `csg_plus:energy_*` statistics have been generated.
+6. Manually switch Energy dashboard consumption to the new energy statistic.
+7. If using official costs, set HA currency to **CNY** and select `csg_plus:cost_*`.
+8. Once the new sources work, remove the old `csg` integration.
+
+**Do not remove old `csg` while Energy dashboard still references its Energy
+total or other old consumption source.** Long-term parallel operation is not
+required. Avoid configuring both sources for the same usage. CSG Plus never
+writes Energy preferences or automatically cleans up old data.
 
 ## Update intervals
 
@@ -270,11 +296,21 @@ Bridge convergence for both daily usage and official monthly costs.
 
 ## API implementation
 
-[`custom_components/csg/csg_client/__init__.py`](custom_components/csg/csg_client/__init__.py)
+[`custom_components/csg_plus/csg_client/__init__.py`](custom_components/csg_plus/csg_client/__init__.py)
 implements the CSG App API and can be used independently. See
 `csg_client_demo.py` for a basic example.
 
 ## Credits
 
+- [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg), the upstream `csg` integration and v2 foundation.
 - [CubicPill/china_southern_power_grid_stat](https://github.com/CubicPill/china_southern_power_grid_stat), the upstream project.
 - [lyylyylyylyy](https://github.com/lyylyylyylyy), for upstream SMS verification-code login support.
+
+The original authors' contributions and the existing [GPL-3.0 license](LICENSE)
+are retained. The unchanged `brand/icon.png` (256 × 256) and `brand/icon@2x.png`
+(512 × 512) come from [home-assistant/brands at commit
+792a7f45a882bc5f3a01b661acdfd3bba4ac98e4](https://github.com/home-assistant/brands/tree/792a7f45a882bc5f3a01b661acdfd3bba4ac98e4/custom_integrations/china_southern_power_grid_stat),
+under `custom_integrations/china_southern_power_grid_stat`.
+Their Git blob SHAs are `e62fa5453c7119bd7b0987b101558c8a2f2c564b` and
+`3ce6c56969aa36f96f0a82bce4808201662cbe7d`, respectively. Reusing this historical
+integration icon does not imply endorsement by Home Assistant or China Southern Power Grid.

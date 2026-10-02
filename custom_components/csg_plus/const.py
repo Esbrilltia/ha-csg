@@ -1,10 +1,10 @@
-"""Constants for the China Southern Power Grid Statistics integration."""
+"""Constants for the CSG Statistics Plus integration."""
 
 from datetime import timedelta
 
 from .csg_client import LoginType
 
-DOMAIN = "csg"
+DOMAIN = "csg_plus"
 
 # config flow
 # main account (phone number)

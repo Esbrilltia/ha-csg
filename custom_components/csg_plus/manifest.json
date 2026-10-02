@@ -1,21 +1,21 @@
 {
-  "domain": "csg",
-  "name": "China Southern Power Grid Statistics",
+  "domain": "csg_plus",
+  "name": "CSG Statistics Plus",
   "codeowners": [
     "@Esbrilltia"
   ],
   "config_flow": true,
   "integration_type": "service",
   "dependencies": [],
-  "documentation": "https://github.com/Esbrilltia/ha-csg/",
+  "documentation": "https://github.com/Esbrilltia/ha-csg-plus/",
   "homekit": {},
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/Esbrilltia/ha-csg/issues",
+  "issue_tracker": "https://github.com/Esbrilltia/ha-csg-plus/issues",
   "requirements": [
     "pycryptodome",
     "brotli"
   ],
   "ssdp": [],
-  "version": "2.0.0",
+  "version": "3.0.0-beta.1",
   "zeroconf": []
 }
