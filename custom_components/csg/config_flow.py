@@ -28,6 +28,7 @@ from .const import (
     CONF_AUTH_TOKEN,
     CONF_BILLING_UPDATE_TIME,
     CONF_ELE_ACCOUNTS,
+    CONF_ENERGY_STATISTICS_ENABLED,
     CONF_GENERAL_ERROR,
     CONF_HISTORY_START_MONTH,
     CONF_LOGIN_TYPE,
@@ -544,6 +545,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         history_start = self._entry.data[CONF_SETTINGS].get(
             CONF_HISTORY_START_MONTH, ""
         )
+        energy_enabled = self._entry.data[CONF_SETTINGS].get(CONF_ENERGY_STATISTICS_ENABLED, False)
         schema = vol.Schema(
             {
                 vol.Required(CONF_UPDATE_INTERVAL, default=update_interval): vol.All(
@@ -558,6 +560,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                     default="",
                     description={"suggested_value": history_start},
                 ): str,
+                vol.Required(CONF_ENERGY_STATISTICS_ENABLED, default=energy_enabled): bool,
             }
         )
         if user_input is None:
@@ -580,6 +583,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                 **self._entry.data[CONF_SETTINGS],
                 CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
                 CONF_HISTORY_START_MONTH: history_start,
+                CONF_ENERGY_STATISTICS_ENABLED: user_input.get(CONF_ENERGY_STATISTICS_ENABLED, energy_enabled),
                 CONF_BILLING_UPDATE_TIME: (
                     user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time).isoformat()
                     if hasattr(user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time), "isoformat")

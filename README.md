@@ -65,17 +65,40 @@ The first installation does not fabricate historical entity states from an old
 bill. Cost is taken only from the settled daily `charge` value; the current
 ladder tariff is never used to estimate cost.
 
-To configure Home Assistant Energy, select:
+To configure Home Assistant Energy using the existing entities, select:
 
 - **Energy total** as the electricity consumption source.
 - **Settled cost total** as the entity-with-total-cost source.
+
+## Optional external energy statistics
+
+Enable **Options → Settings → Enable external energy statistics** to publish
+persisted HistoryStore daily usage as a new external energy source. The setting
+defaults to off, including existing entries. Each payment account has a stable
+`csg:energy_<full SHA-256>` ID and a non-sensitive `CSG energy <8 hex digits>` name.
+Select that source manually as electricity consumption in the Energy dashboard.
+The existing **Energy total** entity remains available; this does not automatically
+migrate your dashboard or replace its configured sources.
+
+Statistics use each published day's actual kWh, including real zero, at midnight
+in `Asia/Shanghai`. Missing days stay absent. There is one daily aggregate point,
+without invented hourly distribution; hourly charts may therefore look sparse.
+Monthly bills and reconciliation never alter these daily statistics. Historical
+revisions and newly published missing days converge on later syncs or restart.
+Queued imports are read back before a final comparison with the latest durable
+facts. Unconfirmed import ownership survives an integration reload in memory;
+temporary Recorder failures defer convergence without discarding that ownership.
+Ordinary unload stops producers before draining imports. Home Assistant shutdown
+cancels the wait, and a fresh process compares against the committed database.
+Turning the setting off stops Recorder access and retains existing statistics.
+There is no deletion feature, external cost statistic, or tariff calculation.
 
 ## Installation
 
 Install through [HACS](https://hacs.xyz/) or download a release from
 [orangeboyChen/ha-csg](https://github.com/orangeboyChen/ha-csg/releases).
 
-Home Assistant `2024.4` or newer is required.
+The current development and test baseline is Home Assistant Core `2026.9.3` / Python `3.14.2`. Other Home Assistant versions may work, but are unsupported and untested by this project.
 
 ## Breaking upgrade to v2
 

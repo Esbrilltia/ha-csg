@@ -80,6 +80,7 @@ from .csg_client import (
 )
 
 from .history_store import CSGHistoryStore
+from .energy_statistics import EnergyStatisticsBridge
 from .history_helpers import (
     collect_monthly_bill_candidates as _collect_monthly_bill_candidates,
 )
@@ -395,9 +396,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ledger = EnergyLedger(hass, entry.entry_id)
     await ledger.async_load()
     history_store = hass.data[DOMAIN][entry.entry_id]["history_store"]
-    realtime = RealtimeCoordinator(hass, entry, ledger, history_store)
+    bridge = hass.data[DOMAIN][entry.entry_id].get("energy_statistics_bridge")
+    realtime = RealtimeCoordinator(hass, entry, ledger, history_store, bridge)
     current = CurrentCoordinator(hass, entry, ledger)
-    billing = BillingCoordinator(hass, entry, ledger, history_store)
+    billing = BillingCoordinator(hass, entry, ledger, history_store, bridge)
+    hass.data[DOMAIN][entry.entry_id]["realtime_coordinator"] = realtime
     hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})[
         "billing_coordinator"
     ] = billing
@@ -566,6 +569,7 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=name,
             update_interval=timedelta(
                 seconds=entry.data[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
@@ -611,7 +615,63 @@ class CSGCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
         )
 
 
-class RealtimeCoordinator(CSGCoordinator):
+class CSGFactCoordinator(CSGCoordinator):
+    """Drain admitted refreshes before the entry's final statistics pass."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._fact_updates: set[asyncio.Task] = set()
+        self._fact_updates_drained = asyncio.Event()
+        self._fact_updates_drained.set()
+
+    async def _async_refresh(self, *args, **kwargs) -> None:
+        # Every production refresh route (scheduled, explicit and debounced)
+        # reaches this method. Core's shutdown only closes future refreshes;
+        # it does not await an already running _async_update_data.
+        if self._shutdown_requested:
+            return
+        task = asyncio.current_task()
+        self._fact_updates.add(task)
+        self._fact_updates_drained.clear()
+        try:
+            await super()._async_refresh(*args, **kwargs)
+        finally:
+            self._fact_updates.remove(task)
+            if not self._fact_updates:
+                self._fact_updates_drained.set()
+
+    async def async_shutdown(self) -> None:
+        """Close refresh admission, then wait for all admitted fact writers."""
+        self._shutdown_requested = True
+        try:
+            await super().async_shutdown()
+        except Exception:
+            _LOGGER.warning("CSG refresh cleanup failed; cancelling admitted fact writers", exc_info=True)
+            await self.async_abort()
+            return
+        if self.hass.is_stopping:
+            for task in self._fact_updates:
+                task.cancel()
+            return
+        try:
+            await asyncio.wait_for(self._fact_updates_drained.wait(), SETTING_UPDATE_TIMEOUT)
+        except Exception:
+            _LOGGER.warning("CSG fact writers did not drain; cancelling admitted refreshes", exc_info=True)
+            await self.async_abort()
+
+    async def async_abort(self) -> None:
+        """Stop coroutines, allowing already owned Store writes to drain."""
+        self._shutdown_requested = True
+        for task in tuple(self._fact_updates):
+            task.cancel()
+        if not self.hass.is_stopping:
+            # A cancelled cloud await cannot consume a later executor response.
+            # If Store I/O already began, M3 retains physical ownership and the
+            # refresh's finally only retires after that persistence drain exits.
+            await self._fact_updates_drained.wait()
+
+
+class RealtimeCoordinator(CSGFactCoordinator):
     """Fetch balance and latest published daily usage."""
 
     def __init__(
@@ -620,6 +680,7 @@ class RealtimeCoordinator(CSGCoordinator):
         entry: ConfigEntry,
         ledger: EnergyLedger,
         history_store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -628,6 +689,7 @@ class RealtimeCoordinator(CSGCoordinator):
             f"CSG realtime {entry.data[CONF_USERNAME]}",
         )
         self.history_store = history_store
+        self.energy_statistics_bridge = bridge
 
     def _ledger_total(self, account: str) -> Any:
         """Return the ledger's running total, or unavailable without one."""
@@ -725,6 +787,8 @@ class RealtimeCoordinator(CSGCoordinator):
                         account.account_number, (year, month), usage_days
                     )
                 )
+                if self.energy_statistics_bridge is not None:
+                    self.energy_statistics_bridge.request_sync()
 
                 valid_days = [
                     item
@@ -864,7 +928,7 @@ class CurrentCoordinator(CSGCoordinator):
         return data
 
 
-class BillingCoordinator(CSGCoordinator):
+class BillingCoordinator(CSGFactCoordinator):
     """Fetch delayed bill data and import corrections into Recorder statistics."""
 
     def __init__(
@@ -873,9 +937,11 @@ class BillingCoordinator(CSGCoordinator):
         entry: ConfigEntry,
         ledger: EnergyLedger,
         history_store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         super().__init__(hass, entry, ledger, f"CSG billing {entry.data[CONF_USERNAME]}")
         self.history_store = history_store
+        self.energy_statistics_bridge = bridge
         self.update_interval = None
         update_time = dt.time.fromisoformat(
             entry.data[CONF_SETTINGS].get(
@@ -902,10 +968,14 @@ class BillingCoordinator(CSGCoordinator):
 
     async def async_shutdown(self) -> None:
         """Cancel the fixed-time billing refresh callback."""
-        if self._unsub_daily_refresh:
-            self._unsub_daily_refresh()
-            self._unsub_daily_refresh = None
-        await super().async_shutdown()
+        try:
+            if self._unsub_daily_refresh:
+                unsubscribe, self._unsub_daily_refresh = self._unsub_daily_refresh, None
+                unsubscribe()
+        except Exception:
+            _LOGGER.warning("CSG billing timer cleanup failed; closing refresh admission", exc_info=True)
+        finally:
+            await super().async_shutdown()
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         client = await self._client()
@@ -963,6 +1033,8 @@ class BillingCoordinator(CSGCoordinator):
                         account.account_number, (year, month), usage_days
                     )
                 )
+                if self.energy_statistics_bridge is not None:
+                    self.energy_statistics_bridge.request_sync()
                 merged = _merge_daily_days(
                     usage_days,
                     [],

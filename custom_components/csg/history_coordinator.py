@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
@@ -27,6 +27,9 @@ from .history_helpers import (
     parse_history_start_month,
 )
 from .history_store import CSGHistoryStore
+
+if TYPE_CHECKING:
+    from .energy_statistics import EnergyStatisticsBridge
 
 _LOGGER = logging.getLogger(__name__)
 _CSG_TIME_ZONE = ZoneInfo("Asia/Shanghai")
@@ -51,13 +54,16 @@ class HistoryCoordinator:
     """Collect historical facts without entities, timers, or ledger dependencies."""
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, store: CSGHistoryStore
+        self, hass: HomeAssistant, entry: ConfigEntry, store: CSGHistoryStore,
+        bridge: EnergyStatisticsBridge | None = None,
     ) -> None:
         self.hass = hass
         self.entry = entry
         self.history_store = store
+        self.energy_statistics_bridge = bridge
         self._task: asyncio.Task[None] | None = None
         self._shutdown = False
+        self._abort_fetch_drain = False
 
     def start(self) -> asyncio.Task[None] | None:
         """Start at most one background pass for this lifecycle."""
@@ -76,11 +82,17 @@ class HistoryCoordinator:
     async def async_shutdown(self) -> None:
         """Harvest the pass; ordinary unload drains, global stop retains disk order."""
         self._shutdown = True
+        if getattr(self.hass, "is_stopping", False):
+            self._abort_fetch_drain = True
         if self._task is not None:
             if not self._task.done():
                 self._task.cancel()
             try:
-                await asyncio.shield(self._task)
+                async with asyncio.timeout(SETTING_UPDATE_TIMEOUT):
+                    await asyncio.shield(self._task)
+            except TimeoutError:
+                _LOGGER.warning("Historical request drain timed out; stopping its coroutine", exc_info=True)
+                await self.async_abort()
             except asyncio.CancelledError:
                 # Harvest the child's expected cancellation, but never hide a
                 # cancellation of the caller performing integration cleanup.
@@ -88,6 +100,22 @@ class HistoryCoordinator:
                     raise
             except Exception:
                 _LOGGER.exception("Historical task failed; continuing entry cleanup")
+
+    async def async_abort(self) -> None:
+        """Abandon only read-only cloud waiters; existing Store I/O still drains."""
+        self._shutdown = True
+        self._abort_fetch_drain = True
+        if self._task is None:
+            return
+        if not self._task.done():
+            self._task.cancel()
+        try:
+            await asyncio.shield(self._task)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling() or not self._task.cancelled():
+                raise
+        except Exception:
+            _LOGGER.exception("Historical task failed while stopping; coroutine retired")
 
     async def _fetch(self, function: Any, *args: Any) -> Any:
         """Bound accepted results; ordinary unload drains the read-only request.
@@ -109,6 +137,13 @@ class HistoryCoordinator:
             # global stop may cancel job itself; done then means only that its
             # Future is finished, and says nothing about the read-only worker.
             while not job.done():
+                if self._abort_fetch_drain:
+                    # Cancelling the executor completion does not terminate its
+                    # thread. The cancelled history coroutine never consumes the
+                    # late read-only response or resumes into a Store upsert.
+                    job.cancel()
+                    cancelled = True
+                    break
                 try:
                     await asyncio.shield(job)
                 except asyncio.CancelledError:
@@ -123,6 +158,11 @@ class HistoryCoordinator:
             raise
 
     async def _async_sync(self) -> None:
+        await self._async_collect()
+        if not self._shutdown and self.energy_statistics_bridge is not None:
+            self.energy_statistics_bridge.request_sync()
+
+    async def _async_collect(self) -> None:
         start = self.entry.data.get(CONF_SETTINGS, {}).get(CONF_HISTORY_START_MONTH)
         if not start or self._shutdown:
             return

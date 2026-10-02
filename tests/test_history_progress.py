@@ -220,7 +220,7 @@ def test_already_failed_history_task_is_harvested_and_full_unload_reloads(rig, c
 
 
 @pytest.mark.parametrize("phase", ["history", "billing", "platforms"])
-def test_integration_cleanup_failure_propagates_after_other_cleanup(rig, phase):
+def test_unproven_producer_or_platform_cleanup_failure_keeps_runtime(rig, phase):
     events = []
     failure = RuntimeError("synthetic integration cleanup failure")
 
@@ -239,8 +239,11 @@ def test_integration_cleanup_failure_propagates_after_other_cleanup(rig, phase):
         with pytest.raises(RuntimeError) as raised:
             await integration.async_unload_entry(rig.hass, rig.entry)
         assert raised.value is failure
-        assert events == ["history", "billing", "platforms"]
-        assert rig.entry.entry_id not in rig.hass.data[DOMAIN]
+        # These unknown producers deliberately have no cancellation fallback.
+        # An unproven barrier must prevent finalization/platform removal; a
+        # genuine platform failure must also retain the runtime for diagnosis.
+        assert events == (["history", "billing", "platforms"] if phase == "platforms" else ["history", "billing"])
+        assert rig.entry.entry_id in rig.hass.data[DOMAIN]
     asyncio.run(scenario())
 
 

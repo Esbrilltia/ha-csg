@@ -12,7 +12,7 @@ from itertools import permutations
 import pytest
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import json as ha_json
+from homeassistant.helpers import storage as ha_storage
 from homeassistant.util import json as json_util
 from homeassistant.util.file import WriteError
 
@@ -438,10 +438,12 @@ def real_storage_io(monkeypatch):
                 raise HomeAssistantError("Synthetic verification read failure")
             return original_read(*args, **kwargs)
 
-    original_write = ha_json.write_utf8_file
+    # Store._write_prepared_data resolves this physical writer in HA
+    # 2026.9.3; keep its executor and HistoryStorageHass queue intact.
+    original_write = ha_storage.write_utf8_file
     original_read = json_util.load_json
     io = StorageIO()
-    monkeypatch.setattr(ha_json, "write_utf8_file", io.write)
+    monkeypatch.setattr(ha_storage, "write_utf8_file", io.write)
     monkeypatch.setattr(json_util, "load_json", io.read)
     return io
 

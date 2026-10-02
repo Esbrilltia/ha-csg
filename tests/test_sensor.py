@@ -511,6 +511,7 @@ class FakeBillingCoordinator:
     def __init__(self) -> None:
         self.ledger = FakeLedger()
         self.history_store = AsyncMock()
+        self.energy_statistics_bridge = None
         self.corrected: dict | None = None
         self.verified: dict = {}
 
@@ -669,6 +670,7 @@ def make_realtime_coordinator(ledger: EnergyLedger, client: FakeUsageClient):
     coordinator.entry = SimpleNamespace(entry_id="entry")
     coordinator.ledger = ledger
     coordinator.history_store = AsyncMock()
+    coordinator.energy_statistics_bridge = None
 
     async def _client():
         return client
@@ -854,6 +856,7 @@ class FakeRealtimeCoordinator(RealtimeCoordinator):
         self.client = client
         self.ledger = make_ledger()
         self.history_store = AsyncMock()
+        self.energy_statistics_bridge = None
         self.notifications: list[tuple[str, str, Exception]] = []
         self.dismissed: list[tuple[str, str]] = []
 
