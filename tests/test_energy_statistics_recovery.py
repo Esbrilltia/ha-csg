@@ -34,7 +34,7 @@ from custom_components.csg.history_store import CSGHistoryStore
 def platform_world(recorder_world, monkeypatch):
     """No replacement Core setup/unload, platform forwarding or entity removal."""
     @asynccontextmanager
-    async def world():
+    async def world(*, before_setup=None):
         async with recorder_world() as base:
             await base.bridge.async_shutdown()
             hass, entry = base.hass, base.entry
@@ -57,17 +57,19 @@ def platform_world(recorder_world, monkeypatch):
             await loader.async_get_integration(hass, "sensor")
             assert await ha_sensor.async_setup(hass, {})
             hass.config.components.update({DOMAIN, "sensor"})
+            if before_setup is not None:
+                await before_setup(base)
             assert await hass.config_entries.async_setup(entry.entry_id)
             assert entry.state is ConfigEntryState.LOADED
             await hass.async_block_till_done()
             runtime = hass.data[DOMAIN][entry.entry_id]
             await base.sync(runtime["energy_statistics_bridge"])
-            entities = set(hass.states.async_entity_ids("sensor"))
-            assert len(entities) == 18
+            entities = {entity.entity_id for entity in hass.data[ha_sensor.DATA_COMPONENT].entities}
+            assert len(entities) == 16
             base.cloud = cloud
             base.entities = entities
             base.component = hass.data[ha_sensor.DATA_COMPONENT]
-            assert len(tuple(base.component.entities)) == 18
+            assert len(tuple(base.component.entities)) == 16
             base.runtime = lambda: hass.data[DOMAIN][entry.entry_id]
             try:
                 yield base
@@ -134,7 +136,7 @@ async def materialization_fault(world, monkeypatch, kind):
 
 async def assert_live(world):
     assert world.entry.state is ConfigEntryState.LOADED
-    assert len(tuple(world.component.entities)) == 18
+    assert len(tuple(world.component.entities)) == 16
     assert set(entity.entity_id for entity in world.component.entities) == world.entities
     runtime = world.runtime()
     assert runtime["energy_statistics_bridge"].enabled
@@ -226,7 +228,7 @@ def test_disable_failure_then_reenable_recovers_without_disabled_recorder_access
             async with materialization_fault(world, monkeypatch, "query"):
                 assert await world.hass.config_entries.async_reload(world.entry.entry_id)
             assert world.entry.state is ConfigEntryState.LOADED
-            assert len(tuple(world.component.entities)) == 18
+            assert len(tuple(world.component.entities)) == 16
             disabled = world.runtime()["energy_statistics_bridge"]
             assert not disabled.enabled
             assert "final materialization did not complete" in caplog.text
@@ -475,7 +477,7 @@ def test_genuine_platform_failure_is_not_hidden_and_retains_runtime(platform_wor
                 assert not await world.hass.config_entries.async_unload(world.entry.entry_id)
                 assert world.entry.state is ConfigEntryState.FAILED_UNLOAD
                 assert world.runtime() is old
-                assert len(tuple(world.component.entities)) == 18
+                assert len(tuple(world.component.entities)) == 16
             # Test-only teardown of a genuine unrecoverable platform fault;
             # recovery acceptance above exclusively uses supported Core APIs.
             assert await original(world.entry, integration.PLATFORMS)

@@ -26,7 +26,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.util.unit_conversion import EnergyConverter
 
-from .const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, DOMAIN
+from .const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, DEFAULT_ENERGY_STATISTICS_ENABLED, DOMAIN
 from .csg_client import CSGElectricityAccount
 from .history_store import CSGHistoryStore
 
@@ -126,7 +126,7 @@ class EnergyStatisticsBridge:
         self.hass = hass
         self.entry = entry
         self.history_store = store
-        self.enabled = entry.data.get(CONF_SETTINGS, {}).get(CONF_ENERGY_STATISTICS_ENABLED, False) is True
+        self.enabled = entry.data.get(CONF_SETTINGS, {}).get(CONF_ENERGY_STATISTICS_ENABLED, DEFAULT_ENERGY_STATISTICS_ENABLED) is True
         self._task: asyncio.Task[None] | None = None
         self._pending = False
         self._shutdown = False

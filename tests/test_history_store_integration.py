@@ -1,4 +1,4 @@
-"""Coordinator shadow writes with real HistoryStore and EnergyLedger logic.
+"""Coordinator fact writes with real HistoryStore logic.
 
 Only HA storage I/O, scheduling, notifications and the cloud are replaced.
 Fact validation, coverage, persistence verification and reconciliation stay real.
@@ -22,20 +22,19 @@ from custom_components.csg.const import (
     ATTR_KEY_SETTLEMENT_DATE,
     ATTR_KEY_YEAR_BILLING_DELAY,
     CONF_AUTH_TOKEN,
+    CONF_ENERGY_STATISTICS_ENABLED,
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
     CONF_UPDATE_INTERVAL,
     DOMAIN,
     SUFFIX_ARR,
     SUFFIX_BAL,
-    SUFFIX_ENERGY_TOTAL,
     SUFFIX_LAST_MONTH_COST,
     SUFFIX_LAST_MONTH_KWH,
     SUFFIX_LAST_YEAR_COST,
     SUFFIX_LAST_YEAR_KWH,
     SUFFIX_LATEST_DAY_COST,
     SUFFIX_LATEST_DAY_KWH,
-    SUFFIX_SETTLED_COST_TOTAL,
     SUFFIX_THIS_MONTH_COST,
     SUFFIX_THIS_MONTH_KWH,
     SUFFIX_THIS_YEAR_COST,
@@ -109,7 +108,7 @@ def rig(monkeypatch):
         data={
             CONF_AUTH_TOKEN: "test",
             CONF_USERNAME: "test-user",
-            CONF_SETTINGS: {CONF_UPDATE_INTERVAL: 3600},
+            CONF_SETTINGS: {CONF_UPDATE_INTERVAL: 3600, CONF_ENERGY_STATISTICS_ENABLED: False},
             CONF_ELE_ACCOUNTS: {
                 name: CSGElectricityAccount(name, area_code="080000").dump()
                 for name in ("account", "other")
@@ -119,12 +118,10 @@ def rig(monkeypatch):
     hass = SimpleNamespace(data={}, async_add_executor_job=execute, is_stopping=False,
                            bus=SimpleNamespace(async_listen_once=Mock(return_value=Mock())))
     monkeypatch.setattr(history_module, "Store", Storage)
-    monkeypatch.setattr(sensor, "Store", Storage)
     monkeypatch.setattr(sensor.CSGCoordinator, "_client", AsyncMock(return_value=client))
     monkeypatch.setattr(sensor.CSGCoordinator, "_fetch", staticmethod(execute))
     monkeypatch.setattr(sensor.CSGCoordinator, "_notify_failure", Mock())
     monkeypatch.setattr(sensor.CSGCoordinator, "_clear_failure", Mock())
-    monkeypatch.setattr(sensor.BillingCoordinator, "_async_correct_statistics", AsyncMock(return_value={}))
     monkeypatch.setattr(sensor, "_csg_today", lambda: dt.date(2026, 9, 3))
     monkeypatch.setattr(history_module, "_csg_today", lambda: dt.date(2026, 9, 3))
     monkeypatch.setattr(history_module, "_utcnow_iso", lambda: "first")
@@ -133,14 +130,11 @@ def rig(monkeypatch):
     async def build():
         history = CSGHistoryStore(hass, entry.entry_id)
         await history.async_load()
-        ledger = sensor.EnergyLedger(hass, entry.entry_id)
-        await ledger.async_load()
         return SimpleNamespace(
             history=history,
-            ledger=ledger,
-            realtime=sensor.RealtimeCoordinator(hass, entry, ledger, history),
-            billing=sensor.BillingCoordinator(hass, entry, ledger, history),
-            current=sensor.CurrentCoordinator(hass, entry, ledger),
+            realtime=sensor.RealtimeCoordinator(hass, entry, history),
+            billing=sensor.BillingCoordinator(hass, entry, history),
+            current=sensor.CurrentCoordinator(hass, entry),
         )
 
     return SimpleNamespace(
@@ -228,7 +222,7 @@ def test_entry_load_failure_does_not_forward_or_replace_history(rig, monkeypatch
     assert rig.entry.entry_id not in rig.hass.data[DOMAIN]
 
 
-def test_realtime_full_rows_zero_account_isolation_and_legacy_latest_only(rig):
+def test_realtime_full_rows_zero_and_account_isolation(rig):
     rows = [{"date": "2026-09-01", "kwh": 0}, {"date": "2026-09-02", "kwh": 4}]
     rig.client.daily["account", (2026, 9)] = (99, rows)
     rig.client.daily["other", (2026, 9)] = (7, [{"date": "2026-09-02", "kwh": 7}])
@@ -237,14 +231,13 @@ def test_realtime_full_rows_zero_account_isolation_and_legacy_latest_only(rig):
         objects = await rig.build()
         data = await objects.realtime._async_update_data()
         assert data["account"] == {
-            SUFFIX_BAL: 50, SUFFIX_ARR: 0, SUFFIX_ENERGY_TOTAL: 4,
+            SUFFIX_BAL: 50, SUFFIX_ARR: 0,
             SUFFIX_YESTERDAY_KWH: 4, sensor._KEY_YESTERDAY_DATE: "2026-09-02",
         }
         assert objects.history.daily_usage("account", "2026-09-01")["kwh"] == 0
         assert objects.history.daily_usage("account", "2026-09-02")["kwh"] == 4
         assert objects.history.daily_usage("other", "2026-09-02")["kwh"] == 7
         assert objects.history.daily_usage("other", "2026-09-01") is None
-        assert objects.ledger._data["accounts"]["account"]["realtime"] == {"2026-09-02": 4}
         assert objects.history.monthly_bill("account", (2026, 9)) is None
         assert objects.history.monthly_reconciliation("account", (2026, 9)) is None
         assert rig.client.calls == [
@@ -265,7 +258,6 @@ def test_realtime_empty_success_records_coverage_and_preserves_fallback(rig, pre
         assert objects.history.daily_coverage("account", (2026, 9))["state"] == "empty"
         assert objects.history.daily_usage("account", "2026-09-02") is None
         assert data[SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
-        assert data[SUFFIX_ENERGY_TOTAL] == (0 if previous_rows else STATE_UNAVAILABLE)
         assert rig.client.calls[:3] == [
             ("balance", "account"), ("daily", "account", (2026, 9)),
             ("daily", "account", (2026, 8)),
@@ -281,7 +273,6 @@ def test_realtime_published_older_day_still_stops_at_current_month(rig):
         objects = await rig.build()
         data = (await objects.realtime._async_update_data())["account"]
         assert data[SUFFIX_YESTERDAY_KWH] == STATE_UNAVAILABLE
-        assert data[SUFFIX_ENERGY_TOTAL] == 3
         assert ("daily", "account", (2026, 8)) not in rig.client.calls
 
     asyncio.run(exercise())
@@ -312,7 +303,6 @@ def test_billing_ingests_independent_facts_then_reconciles_without_display_chang
             SUFFIX_LATEST_DAY_KWH: 4, SUFFIX_LATEST_DAY_COST: STATE_UNAVAILABLE,
             ATTR_KEY_SETTLEMENT_DATE: {ATTR_KEY_SETTLEMENT_DATE: "2026-09-02"},
             SUFFIX_LAST_MONTH_KWH: 88, SUFFIX_LAST_MONTH_COST: 12,
-            SUFFIX_SETTLED_COST_TOTAL: STATE_UNAVAILABLE,
             SUFFIX_THIS_YEAR_KWH: 30, SUFFIX_THIS_YEAR_COST: 18,
             SUFFIX_LAST_YEAR_KWH: 0, SUFFIX_LAST_YEAR_COST: 0,
             ATTR_KEY_YEAR_BILLING_DELAY: {ATTR_KEY_YEAR_BILLING_DELAY: "2026-08"},
@@ -331,14 +321,6 @@ def test_billing_ingests_independent_facts_then_reconciles_without_display_chang
             call("account", (2026, 9)), call("account", (2026, 8)),
             call("other", (2026, 9)), call("other", (2026, 8)),
         ]
-        assert objects.ledger.energy_total("account") == 4
-        assert objects.ledger.billing_days("account") == {
-            "2026-09-01": {"kwh": 0}, "2026-09-02": {"kwh": 4}, "2026-08-31": {"kwh": 6},
-        }
-        objects.billing._async_correct_statistics.assert_any_await("account", {
-            "2026-09-01": ({}, {"kwh": 0}),
-            "2026-08-31": ({}, {"kwh": 6}),
-        })
         assert rig.client.calls == [
             (kind, account, period)
             for account in ("account", "other")
@@ -386,7 +368,7 @@ def test_malformed_month_row_does_not_poison_year_or_valid_months(rig, bad):
     asyncio.run(exercise())
 
 
-def test_raw_daily_rows_reach_store_validation_before_legacy_merge(rig):
+def test_raw_daily_rows_reach_store_conflict_validation(rig):
     rows = [
         {"date": "2026-09-01", "kwh": 0},
         {"date": "2026-09-02", "kwh": 2},
@@ -404,8 +386,6 @@ def test_raw_daily_rows_reach_store_validation_before_legacy_merge(rig):
         assert objects.history.daily_usage("account", "2026-09-01")["kwh"] == 0
         assert objects.history.daily_usage("account", "2026-09-02") is None
         assert objects.history.daily_coverage("account", (2026, 9))["valid_days"] == 1
-        # Legacy merge keeps its existing last-row behavior independently.
-        assert objects.ledger.billing_days("account")["2026-09-02"]["kwh"] == 3
 
     asyncio.run(exercise())
 
@@ -481,7 +461,7 @@ def test_current_coordinator_keeps_ladder_without_history_writes(rig):
 
 
 @pytest.mark.parametrize("operation", ["async_upsert_daily_usage", "async_upsert_monthly_bill", "async_reconcile_month"])
-def test_shadow_write_failure_preserves_legacy_data_and_reports_error(rig, monkeypatch, caplog, operation):
+def test_history_write_failure_preserves_snapshots_and_reports_error(rig, monkeypatch, caplog, operation):
     rig.client.daily["account", (2026, 9)] = (4, [{"date": "2026-09-02", "kwh": 4}])
     rig.client.years["account", 2026] = (6, 10, [{"month": "202608", "kwh": 10, "charge": 6}])
 
@@ -494,9 +474,7 @@ def test_shadow_write_failure_preserves_legacy_data_and_reports_error(rig, monke
         assert billing[SUFFIX_THIS_MONTH_KWH] == 4
         assert billing[SUFFIX_LAST_MONTH_COST] == 6
         assert billing[SUFFIX_THIS_YEAR_KWH] == 10
-        assert objects.ledger.energy_total("account") == 4
-        assert objects.ledger.billing_days("account")["2026-09-02"] == {"kwh": 4}
-        assert "HistoryStore shadow write failed" in caplog.text
+        assert "HistoryStore write failed" in caplog.text
 
     asyncio.run(exercise())
 

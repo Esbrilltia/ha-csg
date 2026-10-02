@@ -58,8 +58,6 @@ LOGIN_TYPE_TO_QR_APP_NAME = {
 # sensor updates
 SUFFIX_BAL = "balance"
 SUFFIX_ARR = "arrears"
-SUFFIX_ENERGY_TOTAL = "energy_total"
-SUFFIX_SETTLED_COST_TOTAL = "settled_cost_total"
 SUFFIX_YESTERDAY_KWH = "yesterday_kwh"
 SUFFIX_LATEST_DAY_KWH = "latest_settlement_day_kwh"
 SUFFIX_LATEST_DAY_COST = "latest_settlement_day_cost"
@@ -80,9 +78,6 @@ ATTR_KEY_MONTH_BILLING_DELAY = "month_billing_delay"
 ATTR_KEY_YEAR_BILLING_DELAY = "year_billing_delay"
 ATTR_KEY_CURRENT_LADDER_START_DATE = "current_ladder_start_date"
 
-STORAGE_KEY = f"{DOMAIN}.energy_ledger"
-STORAGE_VERSION = 1
-
 # settings
 
 # currently, this timeout is for each request, user should not need to set it manually
@@ -96,3 +91,4 @@ SETTING_LAST_YEAR_UPDATE_DAY_THRESHOLD = 7
 # defaults
 DEFAULT_UPDATE_INTERVAL = timedelta(hours=4).seconds
 DEFAULT_BILLING_UPDATE_TIME = "12:00:00"
+DEFAULT_ENERGY_STATISTICS_ENABLED = True

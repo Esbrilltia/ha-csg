@@ -20,65 +20,72 @@ Assistant statistics and Energy dashboard use.
 
 ## Data freshness
 
-The following classifications follow the upstream integration README and its API
-mapping. They describe data freshness, not endpoint naming.
+The current production path uses published daily usage and official billing snapshots.
 
 | Data | Source | Freshness |
 | --- | --- | --- |
-| Balance and arrears | `queryUserAccountNumberSurplus` | Realtime |
-| Current ladder tier, remaining allowance, and tariff | `queryDayElectricChargeByMPoint` ladder fields | Realtime |
-| Yesterday's electricity usage | `queryDayElectricByMPointYesterday` | Realtime |
-| Daily usage, daily cost, monthly totals | `queryDayElectricByMPoint` and `queryDayElectricChargeByMPoint` | Delayed by about two days for the current month |
-| Current and previous year totals | `getAnalyzeFeeDetails` | Non-realtime; current year is updated through the previous month |
+| Balance and arrears | `queryUserAccountNumberSurplus` | Latest account snapshot |
+| Yesterday and recent daily usage | `get_month_daily_usage_detail()` / `queryDayElectricByMPoint` | Published daily facts; an unpublished yesterday is unavailable |
+| Guangzhou ladder snapshot | Current-month daily usage | Existing single-household calculation; no tariff profile |
+| Previous settled month cost and year usage/cost | `get_year_month_stats()` / `getAnalyzeFeeDetails` | Official billing snapshots; current year is settled through the previous month |
 
-“Realtime” yesterday usage is still a daily value. It is not live power or
-today's accumulated consumption.
+Daily usage is not live power or today's accumulated consumption. The current
+daily API returns kWh only, so latest settlement-day cost and this-month cost
+stay unavailable without an authoritative charge. Previous-month and year
+cost snapshots retain their existing official sources; no daily cost is inferred.
 
 ## Entities
 
 Each payment account provides the following sensors:
 
-- Energy total: cumulative `kWh` for the Home Assistant Energy dashboard.
-- Settled cost total: cumulative `CNY` cost for Energy dashboard cost tracking.
 - Yesterday usage, balance, and arrears.
 - Current ladder tier, remaining energy, and tariff.
 - Latest settlement-day usage and cost.
 - This month, last month, this year, and last year usage and cost totals.
 
-Only **Energy total** and **Settled cost total** use the
-`total_increasing` state class. All query snapshots use `measurement` or no
-state class, so Home Assistant does not mistake a monthly or yearly snapshot
-for a continuously increasing meter.
+Snapshots use `measurement` or no state class. The integration no longer
+creates **Energy total** or **Settled cost total**. There is no replacement
+`total_increasing` sensor.
 
-## Energy dashboard and billing corrections
+## Energy statistics and M5 migration
 
-Energy total advances smoothly through the current day using the latest complete
-daily reading as its rate. The ledger remains based on complete daily readings,
-so this interpolation is only for the live entity value. When the delayed
-daily bill becomes available, the integration compares its `result[].power` and
-`result[].charge` values with stored data and corrects existing Home Assistant
-Recorder statistics for that date.
+The supported Energy consumption path is:
 
-The cumulative entities never decrease: historical bill corrections update the
-Recorder's historical sums rather than resetting a `total_increasing` meter.
-The first installation does not fabricate historical entity states from an old
-bill. Cost is taken only from the settled daily `charge` value; the current
-ladder tariff is never used to estimate cost.
+```text
+CSG daily facts → HistoryStore → EnergyStatisticsBridge
+→ Home Assistant Recorder external statistics → Energy dashboard
+```
 
-To configure Home Assistant Energy using the existing entities, select:
-
-- **Energy total** as the electricity consumption source.
-- **Settled cost total** as the entity-with-total-cost source.
-
-## Optional external energy statistics
-
-Enable **Options → Settings → Enable external energy statistics** to publish
-persisted HistoryStore daily usage as a new external energy source. The setting
-defaults to off, including existing entries. Each payment account has a stable
+**Options → Settings → Enable external energy statistics** defaults to **on**.
+Existing entries with no setting are enabled on upgrade, and new entries are
+enabled by default. An explicit **off** is preserved and performs no integration
+Recorder reads or writes. Each payment account has a stable
 `csg:energy_<full SHA-256>` ID and a non-sensitive `CSG energy <8 hex digits>` name.
-Select that source manually as electricity consumption in the Energy dashboard.
-The existing **Energy total** entity remains available; this does not automatically
-migrate your dashboard or replace its configured sources.
+The full SHA-256 is derived from the payment account number.
+
+The integration does not modify Energy dashboard preferences. For each account:
+
+1. Confirm that the new external statistic has been generated.
+2. Manually switch its electricity consumption source to `csg:energy_<full SHA-256>`.
+3. Do not configure both the old Energy total and the new external statistic as
+   consumption sources for the same account; that would double-count usage.
+
+The old Energy total and Settled cost total are retired. Home Assistant may
+retain unavailable/restored registry placeholders. Existing entity registry
+entries and Recorder history/statistics are never automatically deleted.
+The old `csg.energy_ledger.<entry_id>` Store remains on disk as inert legacy
+data: it is not loaded, saved, migrated, or removed. Any later cleanup is a
+separate user operation.
+
+There is no external cost statistic in M5. Settled cost total is not a supported
+cost source. Tariff profiles, multi-person allowances, TOU, historical daily
+cost derivation, and allocating monthly charges to days are deferred to M6.
+No charge is calculated by multiplying current tariff by kWh.
+
+The audited rollback target is the M4 merge
+`e4af90b31e7a2ee9902adbb8255ed3559e9d93a3`, retaining the
+HistoryStore → Bridge path. It is not a recommendation to restore the retired
+ledger/interpolation/correction path.
 
 Statistics use each published day's actual kWh, including real zero, at midnight
 in `Asia/Shanghai`. Missing days stay absent. There is one daily aggregate point,
@@ -108,7 +115,10 @@ Version 2 changes the integration domain from
 1. Remove the old integration.
 2. Restart Home Assistant.
 3. Add **CSG** again and configure the account.
-4. Remove old devices, entities, and historical statistics if they are no longer needed.
+4. Configure the external statistic as described in the M5 migration above.
+
+This domain change is separate from M5 retirement; historical data cleanup is
+not automatic.
 
 ## Update intervals
 

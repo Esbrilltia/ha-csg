@@ -1,8 +1,6 @@
 {
   "entity": {
     "sensor": {
-      "energy_total": {"name": "{account} Energy total"},
-      "settled_cost_total": {"name": "{account} Settled cost total"},
       "yesterday_usage": {"name": "{account} Yesterday usage"},
       "balance": {"name": "{account} Balance"},
       "arrears": {"name": "{account} Arrears"},
@@ -52,7 +50,7 @@
     "step": {
       "init": {"title": "Choose an action", "menu_options": {"add_account": "Add a linked payment account", "settings": "Settings"}},
       "add_account": {"title": "Choose a payment account"},
-      "settings": {"title": "Settings", "data_description": {"history_start_month": "Earliest month you allow this integration to fetch historical facts. Leave empty to disable new historical backfill.", "energy_statistics_enabled": "Publish persisted daily usage as external energy statistics. Turning this off retains existing statistics. Choose the new source manually in the Energy dashboard."}, "data": {"update_interval": "Update interval (seconds)", "billing_update_time": "Daily billing update time", "history_start_month": "Historical sync start month (YYYY-MM)", "energy_statistics_enabled": "Enable external energy statistics"}}
+      "settings": {"title": "Settings", "data_description": {"history_start_month": "Earliest month you allow this integration to fetch historical facts. Leave empty to disable new historical backfill.", "energy_statistics_enabled": "Publish persisted daily usage as the supported Energy consumption source. Enabled by default, including entries with no setting. Turning this off retains existing statistics and stops Recorder access. Switch the source manually in the Energy dashboard; do not combine old and new consumption sources for the same account."}, "data": {"update_interval": "Update interval (seconds)", "billing_update_time": "Daily billing update time", "history_start_month": "Historical sync start month (YYYY-MM)", "energy_statistics_enabled": "Enable external energy statistics"}}
     },
     "error": {"invalid_history_start_month": "Enter a valid calendar month as YYYY-MM, or leave empty to disable historical backfill."},
     "abort": {"no_account": "No payment account is linked to this CSG account", "all_added": "All linked payment accounts are already configured"}

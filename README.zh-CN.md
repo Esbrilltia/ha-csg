@@ -17,49 +17,65 @@
 
 ## 数据时效
 
-下表按上游集成 README 和 API 映射说明数据时效，而不是接口名称。
+当前 production 使用已发布的真实日电量和正式账单快照。
 
 | 数据 | 来源 | 时效 |
 | --- | --- | --- |
-| 余额和欠费 | `queryUserAccountNumberSurplus` | 实时 |
-| 当前阶梯、剩余电量和电价 | `queryDayElectricChargeByMPoint` 的阶梯字段 | 实时 |
-| 昨日用电量 | `queryDayElectricByMPointYesterday` | 实时 |
-| 每日用电量、每日费用、月度汇总 | `queryDayElectricByMPoint` 和 `queryDayElectricChargeByMPoint` | 当月通常延迟约两天 |
-| 当年和上年汇总 | `getAnalyzeFeeDetails` | 非实时；当年数据更新至上月 |
+| 余额和欠费 | `queryUserAccountNumberSurplus` | 最新账户快照 |
+| 昨日和近期日电量 | `get_month_daily_usage_detail()` / `queryDayElectricByMPoint` | 已发布的日事实；昨日未发布则 unavailable |
+| 广州阶梯快照 | 当月日用电量 | 保留现有普通单户计算，不实现 tariff profile |
+| 上一结算月费用、年用电量及费用 | `get_year_month_stats()` / `getAnalyzeFeeDetails` | 正式账单快照；今年费用与用电量结算至上月 |
 
-“实时”的昨日用电量仍是按天的数据，不是实时功率或当天累计用电量。
+日电量不是实时功率或今日累计用电量。当前 daily API 只返回 kWh，因此在没有权威
+charge 输入时，最近结算日费用和本月费用保持 unavailable。上月、今年和去年费用
+继续使用已批准的正式数据源，不反推每日费用。
 
 ## 实体
 
 每个缴费户号会提供以下传感器：
 
-- 能源累计用电量：供 Home Assistant 能源面板使用的累计 `kWh`。
-- 已结算累计费用：供能源面板成本跟踪使用的累计 `CNY`。
 - 昨日用电量、余额和欠费。
 - 当前阶梯、剩余电量和电价。
 - 最近结算日用电量和费用。
 - 本月、上月、今年和去年用电量及费用。
 
-只有“能源累计用电量”和“已结算累计费用”使用 `total_increasing` 状态类。其余查询快照使用 `measurement` 或不设置状态类，避免 Home Assistant 将月度或年度快照误认为持续增长的电表读数。
+查询快照使用 `measurement` 或不设置状态类。“能源累计用电量”和“已结算累计费用”
+已退役，不再创建；不会用另一种 `total_increasing` sensor 替代它们。
 
-## 能源面板和账单修正
+## 正式能源统计与 M5 升级迁移
 
-能源累计用电量以昨日完整用电量为依据，并在当前日期内按时间比例平滑推进；账本本身仍只保存完整日读数，因此不会因插值重复计量。延迟的每日账单可用后，集成会将账单中的 `result[].power` 与 `result[].charge` 同已存储数据比较，并修正对应日期的 Home Assistant Recorder 历史统计。
+正式 Energy consumption 路径为：
 
-累计实体本身不会因历史账单修正而下降；修正通过 Recorder 的历史统计完成。首次安装不会根据旧账单虚构历史实体状态。费用仅取已结算的每日 `charge`，不会用当前阶梯电价估算。
+```text
+CSG daily facts → HistoryStore → EnergyStatisticsBridge
+→ Home Assistant Recorder external statistics → Energy Dashboard
+```
 
-若使用现有实体配置 Home Assistant 能源面板，请选择：
+**选项 → 参数设置 → 启用外部能源统计** 默认**开启**。旧 entry 缺少此字段时，升级后
+视为启用；新 entry 默认启用。用户明确设置的 **False** 会继续保留，该关闭状态下
+集成不执行任何 Recorder 读取或写入。每个缴费账号的稳定标识是
+`csg:energy_<full SHA-256>`，显示名称为不含敏感信息的 `CSG energy <前 8 位 hex>`。
+完整 SHA-256 由缴费户号生成。
 
-- 用“能源累计用电量”作为电力消耗来源。
-- 用“已结算累计费用”作为总费用实体来源。
+集成不自动修改能源面板 preferences。请对每个账户手动操作：
 
-## 可选的外部能源统计
+1. 确认新 external statistic 已生成。
+2. 将对应账户的消费来源切换到 `csg:energy_<full SHA-256>`。
+3. 同一账户不要同时配置旧 Energy total 和新 external statistic，否则会重复统计。
 
-在 **选项 → 参数设置 → 启用外部能源统计** 中开启后，集成将 HistoryStore
-已持久化的真实日电量发布为新的外部能源来源。此选项默认关闭，已有配置缺少字段时
-也视为关闭。每个缴费账号使用稳定的 `csg:energy_<完整 SHA-256>` 标识，显示名称为
-不含敏感信息的 `CSG energy <前 8 位 hex>`。请在能源面板中手动选择它作为电力消耗来源。
-原“能源累计用电量”实体继续保留，集成不会自动迁移能源面板或替换已配置来源。
+旧 Energy total / Settled cost total 不再由集成创建。Home Assistant 可能保留
+unavailable/restored registry state，这是允许的。旧 entity registry 项和 Recorder
+history/statistics 不会自动删除。旧 `csg.energy_ledger.<entry_id>` Store 留在磁盘上，
+成为 inert legacy data：不读取、不写入、不迁移、不删除。是否清理这些旧数据属于
+后续独立的用户操作。
+
+M5 暂无 external cost statistic，也不再推荐 Settled cost total 作为费用来源。
+Tariff profile、多人额度、TOU、历史日电费推导及月账单按日分摊留待 M6；本阶段
+不使用 current tariff × kWh 反算费用。
+
+安全回退目标是已审计的 M4 merge：
+`e4af90b31e7a2ee9902adbb8255ed3559e9d93a3`，继续使用 HistoryStore → Bridge。
+不推荐恢复已退役的 ledger、interpolation 或 Recorder correction 路径。
 
 每个已发布日的真实电量（包括真实零值）在 `Asia/Shanghai` 当日零点生成一个统计点；
 缺日保持缺失，不制造小时分布，因此小时图可能稀疏。月账单与对账结果不会改写日电量。
@@ -83,7 +99,9 @@
 1. 删除旧集成。
 2. 重启 Home Assistant。
 3. 重新添加 **CSG** 并配置账户。
-4. 按需删除旧设备、实体和历史统计。
+4. 按上述 M5 迁移说明配置 external statistic。
+
+集成域变更与 M5 退役属于不同迁移；历史数据不会自动清理。
 
 ## 更新间隔
 

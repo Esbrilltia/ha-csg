@@ -1,8 +1,6 @@
 {
   "entity": {
     "sensor": {
-      "energy_total": {"name": "{account} 能源累计用电量"},
-      "settled_cost_total": {"name": "{account} 结算累计电费"},
       "yesterday_usage": {"name": "{account} 昨日用电量"},
       "balance": {"name": "{account} 余额"},
       "arrears": {"name": "{account} 欠费"},
@@ -52,7 +50,7 @@
     "step": {
       "init": {"title": "选择操作", "menu_options": {"add_account": "添加已绑定的缴费号", "settings": "参数设置"}},
       "add_account": {"title": "选择缴费号"},
-      "settings": {"title": "参数设置", "data_description": {"history_start_month": "允许获取历史事实的最早月份；留空可关闭新的历史同步。", "energy_statistics_enabled": "将已持久化的真实日电量发布为外部能源统计。关闭后保留已有统计；请在能源面板中手动选择新来源。"}, "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间", "history_start_month": "历史同步起始月份（YYYY-MM）", "energy_statistics_enabled": "启用外部能源统计"}}
+      "settings": {"title": "参数设置", "data_description": {"history_start_month": "允许获取历史事实的最早月份；留空可关闭新的历史同步。", "energy_statistics_enabled": "将已持久化的真实日电量发布为正式能源消耗来源。默认启用，已有配置缺少字段时也启用；明确关闭后停止访问 Recorder 并保留已有统计。请在能源面板中手动切换来源，同一账户不要同时配置旧、新消费来源。"}, "data": {"update_interval": "更新间隔（秒）", "billing_update_time": "每日账单更新时间", "history_start_month": "历史同步起始月份（YYYY-MM）", "energy_statistics_enabled": "启用外部能源统计"}}
     },
     "error": {"invalid_history_start_month": "请输入有效的日历月份（YYYY-MM），或留空以关闭历史同步。"},
     "abort": {"no_account": "账户未绑定缴费号", "all_added": "没有可添加到此集成的缴费号"}
