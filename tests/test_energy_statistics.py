@@ -123,6 +123,9 @@ def rig(monkeypatch):
             self.read_release = None
             self.stop_requested = False
 
+        def is_alive(self):
+            return True
+
         async def async_add_executor_job(self, function, *args):
             if isinstance(function, partial):
                 assert function.func is module.get_metadata

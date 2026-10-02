@@ -268,14 +268,14 @@ def test_real_unconfirmed_ownership_survives_failed_waiter(recorder_world, monke
                 monkeypatch.setattr(world.recorder, "async_block_till_done", AsyncMock())
                 if failure in ("query", "system"):
                     monkeypatch.setattr(module, "statistics_during_period", query)
-                elif failure == "stopping":
-                    world.recorder.stop_requested = True
-                else:
+                elif failure == "timeout":
                     monkeypatch.setattr(module, "_CONFIRMATION_TIMEOUT", 0.1)
                 await world.upsert({DAY1: 2})
                 world.bridge.request_sync()
                 old_task = world.bridge._task
                 await wait_entered(entered)
+                if failure == "stopping":
+                    monkeypatch.setattr(world.recorder, "is_alive", lambda: False)
                 if failure == "system":
                     with pytest.raises(SystemFailure):
                         await asyncio.wait_for(old_task, 3)
@@ -284,7 +284,7 @@ def test_real_unconfirmed_ownership_survives_failed_waiter(recorder_world, monke
                 lane = world.bridge._lanes[world.statistic_id]
                 assert lane.target is not None
                 await world.upsert({DAY1: 1})
-                world.recorder.stop_requested = False
+                monkeypatch.setattr(world.recorder, "is_alive", lambda: True)
                 monkeypatch.setattr(module, "_CONFIRMATION_TIMEOUT", 5)
                 fresh = EnergyStatisticsBridge(world.hass, world.entry, world.store)
                 fresh.request_sync()
@@ -295,6 +295,56 @@ def test_real_unconfirmed_ownership_survives_failed_waiter(recorder_world, monke
                 await asyncio.wait_for(new_task, 5)
                 await assert_converged(world, fresh, [(1, 1)])
                 await fresh.async_shutdown()
+    asyncio.run(scenario())
+
+
+def test_real_confirmation_during_startup_before_stop_flag_initialization(recorder_world, monkeypatch):
+    """DB/Recorder-ready callbacks precede startup task processing in Core."""
+    from custom_components.csg import energy_statistics as module
+
+    async def scenario():
+        async with recorder_world() as world:
+            # Make the critical startup ordering deterministic on all platforms.
+            # These are real imports/queries; only the synchronization hint and
+            # the late-initialized stop flag are controlled.
+            read_back = asyncio.Event()
+            original = module.statistics_during_period
+
+            def query(*args):
+                result = original(*args)
+                if world.bridge._lanes[world.statistic_id].target is not None:
+                    world.hass.loop.call_soon_threadsafe(read_back.set)
+                return result
+
+            with blocked_import(monkeypatch, world.statistic_id) as (entered, release):
+                await world.upsert({DAY1: 1})
+                world.bridge.request_sync()
+                task = world.bridge._task
+                await wait_entered(entered)
+                try:
+                    del world.recorder.stop_requested
+                    assert world.recorder.async_db_ready.result()
+                    assert world.recorder.async_recorder_ready.is_set()
+                    monkeypatch.setattr(world.recorder, "async_block_till_done", AsyncMock())
+                    monkeypatch.setattr(module, "statistics_during_period", query)
+                    # Cancel a hint already queued behind the blocked import;
+                    # a fresh waiter must retain and confirm the exact old target.
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                    fresh = EnergyStatisticsBridge(world.hass, world.entry, world.store)
+                    fresh.request_sync()
+                    task = fresh._task
+                    await asyncio.wait_for(read_back.wait(), 3)
+                    assert not task.done()
+                    assert fresh._lanes[world.statistic_id].target is not None
+                    world.recorder.stop_requested = False
+                    release.set()
+                    await asyncio.wait_for(task, 5)
+                    await assert_converged(world, fresh, [(1, 1)])
+                    await fresh.async_shutdown()
+                finally:
+                    world.recorder.stop_requested = False
     asyncio.run(scenario())
 
 

@@ -235,7 +235,10 @@ class EnergyStatisticsBridge:
 
     async def _async_read_back(self, recorder, lane: _ImportLane) -> None:
         while lane.target is not None:
-            if self.hass.is_stopping or recorder.stop_requested:
+            # Core sets stop_requested only AFTER processing startup tasks;
+            # even async_recorder_ready can precede that initialization. The
+            # public thread liveness API is valid throughout that interval.
+            if self.hass.is_stopping or not recorder.is_alive():
                 raise RuntimeError("Recorder is stopping with an unconfirmed import")
             await recorder.async_block_till_done()
             metadata, desired = lane.target
