@@ -63,6 +63,7 @@ class HistoryCoordinator:
         self.energy_statistics_bridge = bridge
         self._task: asyncio.Task[None] | None = None
         self._shutdown = False
+        self._abort_fetch_drain = False
 
     def start(self) -> asyncio.Task[None] | None:
         """Start at most one background pass for this lifecycle."""
@@ -81,11 +82,17 @@ class HistoryCoordinator:
     async def async_shutdown(self) -> None:
         """Harvest the pass; ordinary unload drains, global stop retains disk order."""
         self._shutdown = True
+        if getattr(self.hass, "is_stopping", False):
+            self._abort_fetch_drain = True
         if self._task is not None:
             if not self._task.done():
                 self._task.cancel()
             try:
-                await asyncio.shield(self._task)
+                async with asyncio.timeout(SETTING_UPDATE_TIMEOUT):
+                    await asyncio.shield(self._task)
+            except TimeoutError:
+                _LOGGER.warning("Historical request drain timed out; stopping its coroutine", exc_info=True)
+                await self.async_abort()
             except asyncio.CancelledError:
                 # Harvest the child's expected cancellation, but never hide a
                 # cancellation of the caller performing integration cleanup.
@@ -93,6 +100,22 @@ class HistoryCoordinator:
                     raise
             except Exception:
                 _LOGGER.exception("Historical task failed; continuing entry cleanup")
+
+    async def async_abort(self) -> None:
+        """Abandon only read-only cloud waiters; existing Store I/O still drains."""
+        self._shutdown = True
+        self._abort_fetch_drain = True
+        if self._task is None:
+            return
+        if not self._task.done():
+            self._task.cancel()
+        try:
+            await asyncio.shield(self._task)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling() or not self._task.cancelled():
+                raise
+        except Exception:
+            _LOGGER.exception("Historical task failed while stopping; coroutine retired")
 
     async def _fetch(self, function: Any, *args: Any) -> Any:
         """Bound accepted results; ordinary unload drains the read-only request.
@@ -114,6 +137,13 @@ class HistoryCoordinator:
             # global stop may cancel job itself; done then means only that its
             # Future is finished, and says nothing about the read-only worker.
             while not job.done():
+                if self._abort_fetch_drain:
+                    # Cancelling the executor completion does not terminate its
+                    # thread. The cancelled history coroutine never consumes the
+                    # late read-only response or resumes into a Store upsert.
+                    job.cancel()
+                    cancelled = True
+                    break
                 try:
                     await asyncio.shield(job)
                 except asyncio.CancelledError:

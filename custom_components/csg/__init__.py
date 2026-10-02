@@ -76,51 +76,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.debug(f"Unloading entry: {entry.title}")
-    cleanup_errors: list[Exception] = []
-    bridge = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("energy_statistics_bridge")
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    bridge = runtime.get("energy_statistics_bridge")
     if bridge is not None:
         bridge.stop_requests()
-    history = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("history_coordinator")
-    if history is not None:
+    cleanup_errors: list[Exception] = []
+    for key in ("history_coordinator", "billing_coordinator", "realtime_coordinator"):
+        producer = runtime.get(key)
+        if producer is None:
+            continue
         try:
-            await history.async_shutdown()
+            await producer.async_shutdown()
         except Exception as err:
-            _LOGGER.exception("History cleanup failed; continuing producer shutdown")
-            cleanup_errors.append(err)
-    billing = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("billing_coordinator")
-    if billing is not None:
-        try:
-            await billing.async_shutdown()
-        except Exception as err:
-            _LOGGER.exception("Billing cleanup failed; continuing producer shutdown")
-            cleanup_errors.append(err)
-    realtime = hass.data.get(DOMAIN, {}).get(entry.entry_id, {}).get("realtime_coordinator")
-    if realtime is not None:
-        try:
-            await realtime.async_shutdown()
-        except Exception as err:
-            _LOGGER.exception("Realtime cleanup failed; continuing producer shutdown")
-            cleanup_errors.append(err)
-    if cleanup_errors and bridge is not None and bridge.enabled and not hass.is_stopping:
-        # A failed barrier does not prove the writers quiesced. Keep their
-        # references for a retry; neither final sync nor platform removal is safe.
+            _LOGGER.warning("CSG %s cleanup failed; forcing coroutine shutdown", key, exc_info=True)
+            if abort := getattr(producer, "async_abort", None):
+                await abort()
+            else:
+                cleanup_errors.append(err)
+    if cleanup_errors:
+        # Unknown lifecycle failures cannot be treated as proven quiescence.
         raise cleanup_errors[0]
     if bridge is not None:
         try:
             await bridge.async_shutdown()
-        except Exception as err:
-            _LOGGER.exception("Energy statistics cleanup failed; continuing entry cleanup")
-            cleanup_errors.append(err)
-    try:
-        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    except Exception as err:
-        cleanup_errors.append(err)
-        unload_ok = False
-    finally:
+        except Exception:
+            _LOGGER.warning(
+                "CSG energy statistics final materialization did not complete; "
+                "HistoryStore facts remain authoritative and a future enabled Bridge sync can retry",
+                exc_info=True,
+            )
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     _LOGGER.debug(f"Unload platforms for entry: {entry.title}, success: {unload_ok}")
-    if cleanup_errors:
-        raise cleanup_errors[0]
     return unload_ok
 
 

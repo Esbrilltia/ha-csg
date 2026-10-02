@@ -642,14 +642,33 @@ class CSGFactCoordinator(CSGCoordinator):
 
     async def async_shutdown(self) -> None:
         """Close refresh admission, then wait for all admitted fact writers."""
-        await super().async_shutdown()
+        self._shutdown_requested = True
+        try:
+            await super().async_shutdown()
+        except Exception:
+            _LOGGER.warning("CSG refresh cleanup failed; cancelling admitted fact writers", exc_info=True)
+            await self.async_abort()
+            return
         if self.hass.is_stopping:
             for task in self._fact_updates:
                 task.cancel()
             return
-        # Timeout is failure, never evidence that a producer stopped. The
-        # integration retains runtime and refuses finalization on this error.
-        await asyncio.wait_for(self._fact_updates_drained.wait(), SETTING_UPDATE_TIMEOUT)
+        try:
+            await asyncio.wait_for(self._fact_updates_drained.wait(), SETTING_UPDATE_TIMEOUT)
+        except Exception:
+            _LOGGER.warning("CSG fact writers did not drain; cancelling admitted refreshes", exc_info=True)
+            await self.async_abort()
+
+    async def async_abort(self) -> None:
+        """Stop coroutines, allowing already owned Store writes to drain."""
+        self._shutdown_requested = True
+        for task in tuple(self._fact_updates):
+            task.cancel()
+        if not self.hass.is_stopping:
+            # A cancelled cloud await cannot consume a later executor response.
+            # If Store I/O already began, M3 retains physical ownership and the
+            # refresh's finally only retires after that persistence drain exits.
+            await self._fact_updates_drained.wait()
 
 
 class RealtimeCoordinator(CSGFactCoordinator):
@@ -949,10 +968,14 @@ class BillingCoordinator(CSGFactCoordinator):
 
     async def async_shutdown(self) -> None:
         """Cancel the fixed-time billing refresh callback."""
-        if self._unsub_daily_refresh:
-            self._unsub_daily_refresh()
-            self._unsub_daily_refresh = None
-        await super().async_shutdown()
+        try:
+            if self._unsub_daily_refresh:
+                unsubscribe, self._unsub_daily_refresh = self._unsub_daily_refresh, None
+                unsubscribe()
+        except Exception:
+            _LOGGER.warning("CSG billing timer cleanup failed; closing refresh admission", exc_info=True)
+        finally:
+            await super().async_shutdown()
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         client = await self._client()

@@ -18,7 +18,6 @@ from custom_components.csg.const import (
     CONF_AUTH_TOKEN, CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH,
     CONF_SETTINGS, CONF_UPDATE_INTERVAL, DOMAIN,
 )
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge
 from custom_components.csg.history_coordinator import HistoryCoordinator
 from custom_components.csg.history_store import CSGHistoryStore
 from test_energy_statistics_pending import blocked_import, wait_entered
@@ -120,6 +119,14 @@ async def setup(world, monkeypatch):
 
 async def write(store, value):
     await store.async_upsert_daily_usage(ACCOUNT, (2026, 9), [{"date": DAY, "kwh": value}])
+
+
+@pytest.fixture
+def real_platform_world(recorder_world, monkeypatch):
+    # Resolve after collection: the A-3 fixture uses Cloud/write above, while
+    # these retained A-2 failure cases now exercise actual Core setup/platforms.
+    from test_energy_statistics_recovery import platform_world
+    return platform_world.__wrapped__(recorder_world, monkeypatch)
 
 
 def core_reload(world, monkeypatch, before_setup=None):
@@ -320,68 +327,56 @@ def test_disable_reload_finalizes_old_enabled_lifecycle(recorder_world, monkeypa
 
 
 @pytest.mark.parametrize("failure", ["absent", "not-ready", "query", "stopping", "timeout", "final-budget", "persistence"])
-def test_final_failure_is_not_unload_success_and_can_recover(recorder_world, monkeypatch, failure):
+def test_final_failure_allows_core_reload_and_enabled_recovery(real_platform_world, monkeypatch, caplog, failure):
+    from test_energy_statistics_recovery import assert_live, materialization_fault
+
     async def scenario():
-        async with recorder_world() as world:
-            runtime, bridge, _, _, platforms, _ = await setup(world, monkeypatch)
-            setup_call = core_reload(world, monkeypatch)
+        async with real_platform_world() as world:
+            runtime = world.runtime()
+            bridge = runtime["energy_statistics_bridge"]
             await write(runtime["history_store"], 3)
-            with monkeypatch.context() as fault:
-                if failure == "absent":
-                    fault.setattr(energy, "get_instance", Mock(side_effect=KeyError("Recorder absent")))
-                elif failure == "not-ready":
-                    fault.setattr(world.recorder, "async_db_ready", asyncio.get_running_loop().create_future())
-                elif failure == "query":
-                    fault.setattr(energy, "statistics_during_period", Mock(side_effect=RuntimeError("query unavailable")))
-                elif failure == "stopping":
-                    fault.setattr(world.recorder, "is_alive", lambda: False)
-                elif failure in ("timeout", "final-budget"):
-                    async def never_confirm(*args):
-                        await asyncio.Event().wait()
-                    fault.setattr(bridge, "_async_read_back", never_confirm)
-                    fault.setattr(energy, "_CONFIRMATION_TIMEOUT" if failure == "timeout" else "_FINALIZATION_TIMEOUT", 0.05)
-                else:
-                    fault.setattr(runtime["history_store"], "async_ensure_persisted", AsyncMock(return_value=False))
-                assert not await world.hass.config_entries.async_reload(world.entry.entry_id)
-                assert world.entry.state is ConfigEntryState.FAILED_UNLOAD
-                setup_call.assert_not_awaited()
-                if failure in ("stopping", "timeout", "final-budget"):
-                    assert bridge._lanes[world.statistic_id].target is not None
-                assert not bridge._accepting and bridge._task is None
-                platforms.assert_awaited_once()
-            # Finalization failed, so Core does not proceed to the next setup.
-            # A later rebuilt Bridge confirms retained ownership before comparing.
-            recovered = EnergyStatisticsBridge(world.hass, world.entry, runtime["history_store"])
+            world.cloud.value = 3
+            kind = {"timeout": "confirmation", "final-budget": "finalization", "persistence": "durability"}.get(failure, failure)
+            async with materialization_fault(world, monkeypatch, kind):
+                assert await world.hass.config_entries.async_reload(world.entry.entry_id)
+                new = await assert_live(world)
+                assert new is not runtime and new["energy_statistics_bridge"] is not bridge
+                assert new["energy_statistics_bridge"]._lanes is bridge._lanes
+                assert not bridge._accepting and bridge._task is None and bridge._shutdown
+                assert "final materialization did not complete" in caplog.text
+                assert (await runtime["history_store"].async_daily_usage_snapshot(ACCOUNT))[DAY]["kwh"] == 3
+            recovered = new["energy_statistics_bridge"]
             await world.sync(recovered)
             assert [(r["state"], r["sum"]) for r in await world.query()] == [(3, 3)]
             assert bridge._lanes[world.statistic_id].target is None
-            await recovered.async_shutdown()
     asyncio.run(scenario())
 
 
-def test_producer_timeout_retains_runtime_and_refuses_final_pass(recorder_world, monkeypatch):
+def test_producer_timeout_cancels_coroutine_before_core_unload_success(real_platform_world, monkeypatch):
+    from test_energy_statistics_recovery import ProducerCloud, assert_live, assert_unloaded, start_producer
+
     async def scenario():
-        async with recorder_world() as world:
-            runtime, bridge, gate, final, platforms, _ = await setup(world, monkeypatch)
-            cloud = Cloud(blocked=True)
-            billing = runtime["billing_coordinator"]
-            monkeypatch.setattr(billing, "_client", AsyncMock(return_value=cloud))
+        async with real_platform_world() as world:
+            runtime = world.runtime()
+            cloud = ProducerCloud()
             try:
-                refreshing = asyncio.create_task(billing.async_refresh())
-                await wait_entered(cloud.entered)
+                billing, refreshing = await start_producer(world, monkeypatch, "billing", cloud)
+                upsert = AsyncMock(wraps=runtime["history_store"].async_upsert_daily_usage)
+                monkeypatch.setattr(runtime["history_store"], "async_upsert_daily_usage", upsert)
                 with monkeypatch.context() as fault:
                     fault.setattr(sensor, "SETTING_UPDATE_TIMEOUT", 0.05)
-                    with pytest.raises(TimeoutError):
-                        await integration.async_unload_entry(world.hass, world.entry)
-                assert gate.is_set() and not final.is_set()
-                assert world.hass.data[DOMAIN][world.entry.entry_id] is runtime
-                platforms.assert_not_awaited()
-                assert not refreshing.done() and not bridge._accepting
+                    assert await asyncio.wait_for(world.hass.config_entries.async_unload(world.entry.entry_id), 5)
+                await assert_unloaded(world)
+                assert refreshing.cancelled() and not billing._fact_updates
+                assert not cloud.ended.is_set()
+                assert runtime["energy_statistics_bridge"]._shutdown
                 cloud.release.set()
-                await asyncio.wait_for(refreshing, 5)
-                assert await integration.async_unload_entry(world.hass, world.entry)
-                assert final.is_set()
-                await assert_final(world, runtime, 3)
+                await wait_entered(cloud.ended)
+                upsert.assert_not_awaited()
+                assert (await runtime["history_store"].async_daily_usage_snapshot(ACCOUNT))[DAY]["kwh"] == 1
+                assert [(r["state"], r["sum"]) for r in await world.query()] == [(1, 1)]
+                assert await world.hass.config_entries.async_setup(world.entry.entry_id)
+                await assert_live(world)
             finally:
                 cloud.release.set()
     asyncio.run(scenario())
@@ -406,11 +401,15 @@ def test_actual_global_stop_cancels_internal_final_waiter(recorder_world, monkey
     asyncio.run(scenario())
 
 
-def test_final_timeout_does_not_join_a_cancellation_drain_forever(recorder_world, monkeypatch):
+def test_final_timeout_does_not_join_a_cancellation_drain_forever(real_platform_world, monkeypatch, caplog):
+    from test_energy_statistics_recovery import assert_live, assert_unloaded
+
     async def scenario():
-        async with recorder_world() as world:
-            runtime, bridge, _, _, _, _ = await setup(world, monkeypatch)
+        async with real_platform_world() as world:
+            runtime = world.runtime()
+            bridge = runtime["energy_statistics_bridge"]
             await write(runtime["history_store"], 3)
+            world.cloud.value = 3
             draining, release = asyncio.Event(), asyncio.Event()
 
             async def drain_after_cancel(*args):
@@ -424,22 +423,36 @@ def test_final_timeout_does_not_join_a_cancellation_drain_forever(recorder_world
             with monkeypatch.context() as fault:
                 fault.setattr(bridge, "_async_read_back", drain_after_cancel)
                 fault.setattr(energy, "_FINALIZATION_TIMEOUT", 0.05)
-                try:
-                    with pytest.raises(TimeoutError):
-                        await asyncio.wait_for(integration.async_unload_entry(world.hass, world.entry), 1)
+                waiters = []
+                original_platforms = world.hass.config_entries.async_unload_platforms
+
+                async def unload_platforms(*args):
+                    # Core later cancels entry background tasks again. Verify
+                    # Bridge ownership at its return boundary before that real
+                    # Core cleanup, then delegate the real platform unload.
                     assert draining.is_set()
                     waiter = bridge._task
                     assert waiter is not None and not waiter.done()
                     assert bridge._lanes[world.statistic_id].target is not None
                     assert bridge._lanes[world.statistic_id].lock.locked()
+                    waiters.append(waiter)
+                    return await original_platforms(*args)
+
+                fault.setattr(world.hass.config_entries, "async_unload_platforms", unload_platforms)
+                try:
+                    assert await asyncio.wait_for(world.hass.config_entries.async_unload(world.entry.entry_id), 1)
+                    await assert_unloaded(world)
+                    assert "final materialization did not complete" in caplog.text
+                    assert len(waiters) == 1
+                    assert bridge._lanes[world.statistic_id].target is not None
                 finally:
                     release.set()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(waiter, 1)
+                    await asyncio.wait_for(waiters[0], 1)
                 assert bridge._task is None
-            recovered = EnergyStatisticsBridge(world.hass, world.entry, runtime["history_store"])
+            assert await world.hass.config_entries.async_setup(world.entry.entry_id)
+            recovered = (await assert_live(world))["energy_statistics_bridge"]
             await world.sync(recovered)
             assert [(r["state"], r["sum"]) for r in await world.query()] == [(3, 3)]
             assert bridge._lanes[world.statistic_id].target is None
-            await recovered.async_shutdown()
     asyncio.run(scenario())

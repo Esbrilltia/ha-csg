@@ -70,7 +70,7 @@ def test_entry_initial_request_and_all_producer_shutdown_order(recent_rig, monke
     asyncio.run(scenario())
 
 
-def test_optional_recorder_failure_does_not_fail_entry_setup(recent_rig, monkeypatch, caplog):
+def test_optional_recorder_failure_does_not_fail_entry_setup_or_unload(recent_rig, monkeypatch, caplog):
     tasks = []
     def create_task(hass, coroutine, name, eager_start):
         task = asyncio.create_task(coroutine, name=name)
@@ -88,8 +88,11 @@ def test_optional_recorder_failure_does_not_fail_entry_setup(recent_rig, monkeyp
         await tasks[0]
         assert "history_store" in recent_rig.hass.data[DOMAIN][recent_rig.entry.entry_id]
         recent_rig.hass.config_entries.async_forward_entry_setups.assert_awaited_once()
-        with pytest.raises(KeyError, match="Recorder absent"):
-            await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
+        assert await integration.async_unload_entry(recent_rig.hass, recent_rig.entry)
+        assert recent_rig.entry.entry_id not in recent_rig.hass.data[DOMAIN]
+        recent_rig.hass.config_entries.async_unload_platforms.assert_awaited_once()
         assert all(task.done() for task in tasks)
     asyncio.run(scenario())
     assert "pass unavailable" in caplog.text
+    assert "final materialization did not complete" in caplog.text
+    assert "HistoryStore facts remain authoritative" in caplog.text
