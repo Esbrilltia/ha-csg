@@ -125,6 +125,10 @@ a hole or revising a bill, including a downward revision, rebuilds the cumulativ
 suffix from the earliest changed month. No delta adjustment or clearing is used.
 Cost imports use the same per-statistic ownership, real readback, retry, unload
 producer barrier and fresh-process recovery as energy imports, in separate lanes.
+Each official billing response with accepted month candidates requests Bridge
+convergence after all upserts, including unchanged refetches and a swallowed save failure.
+The Bridge can retry pending persistence through its durable gate; once facts
+and Recorder agree, repeated refreshes perform no additional imports.
 
 **Official costs are monthly only.** HA charts and calendar aggregation use the
 configured HA timezone. The mid-month anchor is a Recorder materialization

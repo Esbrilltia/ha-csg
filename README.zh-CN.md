@@ -106,6 +106,9 @@ CSG 事实月份定义为 **Asia/Shanghai 自然月**。只物化早于当前上
 从最早变化月重新物化后续累计值，不追加 delta correction，不 adjust，不 clear。
 费用沿用电量已经审计的每 statistic lane、真实回读、重试、producer barrier、
 卸载收敛与进程恢复协议；电量和费用各有独立 lane。
+每个含可接受月账的官方响应在完成该批 upserts 后请求 Bridge 收敛，包括相同事实的
+重复获取或一次被捕获的保存异常。Bridge 通过 durable gate 重试 pending persistence；
+事实与 Recorder 一致后，重复 refresh 不再产生 import。
 
 **正式费用只有月账粒度。** HA 图表和自然月、年聚合受 HA configured timezone 影响。
 月中 anchor 是整月事实的物化约定，在 IANA 时区偏移下仍落在账单所属月、年，不表示

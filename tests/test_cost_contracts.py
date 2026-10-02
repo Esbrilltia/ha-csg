@@ -31,24 +31,31 @@ def test_only_actual_total_amount_becomes_monthly_cost_fact():
     assert collect_monthly_bill_candidates(rows, account.account_number, 2026) == {(2026, 1): (200, 100)}
 
 
-def test_bill_changes_request_bridge_independently_of_daily_requests(recent_rig):
-    recent_rig.client.years["account", 2026] = (100, 200, [{"month": "202601", "charge": 100, "kwh": 200}])
+def test_bill_batches_request_bridge_after_all_upserts_independently_of_changes(recent_rig):
+    months = [{"month": "202601", "charge": 100, "kwh": 200},
+              {"month": "202602", "charge": 120, "kwh": 200}]
+    recent_rig.client.years["account", 2026] = (220, 400, months)
     async def scenario():
         objects = await recent_rig.build()
         notifications = []
-        bridge = SimpleNamespace(request_sync=Mock(side_effect=lambda: notifications.append(deepcopy(objects.history.monthly_bill("account", (2026, 1))))))
+        bridge = SimpleNamespace(request_sync=Mock(side_effect=lambda: notifications.append({
+            month: deepcopy(objects.history.monthly_bill("account", (2026, month))) for month in (1, 2)
+        })))
         objects.billing.energy_statistics_bridge = bridge
         account = CSGElectricityAccount("account", area_code="080000")
         await objects.billing._add_year_data(recent_rig.client, account, {})
         bridge.request_sync.assert_called_once_with()
-        assert notifications[0]["cost_cny"] == 100 and notifications[0]["source"] == MONTHLY_BILL_SOURCE
+        assert notifications[0][1]["cost_cny"] == 100 and notifications[0][1]["source"] == MONTHLY_BILL_SOURCE
+        assert notifications[0][2]["cost_cny"] == 120
         assert not any(call[0] == "daily" for call in recent_rig.client.calls)
         await objects.billing._add_year_data(recent_rig.client, account, {})
-        bridge.request_sync.assert_called_once_with()
-        recent_rig.client.years["account", 2026] = (98, 200, [{"month": "202601", "charge": 98, "kwh": 200}])
-        await objects.billing._add_year_data(recent_rig.client, account, {})
         assert bridge.request_sync.call_count == 2
-        assert notifications[-1]["cost_cny"] == 98
+        assert notifications[1] == notifications[0]
+        recent_rig.client.years["account", 2026] = (218, 400, [{**months[0], "charge": 98}, months[1]])
+        await objects.billing._add_year_data(recent_rig.client, account, {})
+        assert bridge.request_sync.call_count == 3
+        assert notifications[-1][1]["cost_cny"] == 98
+        assert notifications[-1][2]["cost_cny"] == 120
     asyncio.run(scenario())
 
 

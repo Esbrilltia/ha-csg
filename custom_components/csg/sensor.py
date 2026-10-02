@@ -852,10 +852,11 @@ class BillingCoordinator(CSGFactCoordinator):
                 data[cost_suffix] = cost
 
                 # Resolve this response's candidates before any monthly revision.
-                for month, values in _collect_monthly_bill_candidates(
+                bill_candidates = _collect_monthly_bill_candidates(
                     by_month, account.account_number, year
-                ).items():
-                    changed = await _async_write_history(
+                )
+                for month, values in bill_candidates.items():
+                    await _async_write_history(
                         self.history_store.async_upsert_monthly_bill(
                             account.account_number,
                             month,
@@ -863,8 +864,11 @@ class BillingCoordinator(CSGFactCoordinator):
                             cost_cny=values[1],
                         )
                     )
-                    if changed and self.energy_statistics_bridge is not None:
-                        self.energy_statistics_bridge.request_sync()
+                # Fact changes and view convergence are separate: an unchanged
+                # refetch can finish a pending save, and a failed save can be
+                # retried by the Bridge's durable gate. Request once per batch.
+                if bill_candidates and self.energy_statistics_bridge is not None:
+                    self.energy_statistics_bridge.request_sync()
 
                 for month_data in by_month:
                     if not isinstance(month_data, Mapping):
