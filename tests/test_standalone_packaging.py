@@ -1,5 +1,6 @@
 """M7 HACS package and pinned brand assets; PNG validation needs only stdlib."""
 
+import asyncio
 import hashlib
 from importlib.metadata import version
 import json
@@ -9,6 +10,8 @@ import tomllib
 import zlib
 
 import pytest
+from homeassistant import loader
+from homeassistant.core import HomeAssistant
 
 ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "csg_plus"
@@ -30,6 +33,26 @@ def test_hacs_discovers_exactly_one_standalone_integration():
     assert hacs["homeassistant"] == "2026.9.3"
     assert hacs.get("content_in_root", False) is False
     assert hacs.get("zip_release", False) is False
+
+
+def test_manifest_keys_are_sorted_and_real_ha_loader_accepts_them(tmp_path):
+    manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
+    assert list(manifest) == ["domain", "name", *sorted(manifest.keys() - {"domain", "name"})]
+
+    async def scenario():
+        hass = HomeAssistant(str(tmp_path))
+        loader.async_setup(hass)
+        try:
+            integration = await loader.async_get_integration(hass, "csg_plus")
+            assert integration.manifest == {
+                **manifest, "is_built_in": False, "overwrites_built_in": False,
+            }
+            assert integration.domain == "csg_plus"
+            assert integration.version == "3.0.0-beta.1"
+        finally:
+            await hass.async_stop(force=True)
+
+    asyncio.run(scenario())
 
 
 def test_packaging_preserves_locked_runtime_and_candidate_version():
