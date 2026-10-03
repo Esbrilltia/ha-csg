@@ -13,12 +13,12 @@ import pytest
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.components.sensor import SensorStateClass
 
-from custom_components.csg import sensor
-from custom_components.csg.const import (
+from custom_components.csg_plus import sensor
+from custom_components.csg_plus.const import (
     ATTR_KEY_CURRENT_LADDER_START_DATE, CONF_SETTINGS, CONF_TARIFF_PROFILES,
     SUFFIX_CURRENT_LADDER, SUFFIX_CURRENT_LADDER_REMAINING_KWH, SUFFIX_CURRENT_LADDER_TARIFF,
 )
-from custom_components.csg.tariff import (
+from custom_components.csg_plus.tariff import (
     BASE_EX_FUNDS, FIXED_ADDONS, FLAT_RATIO, PEAK_RATIO, VALLEY_RATIO,
     GUANGZHOU_PROFILES, current_ladder, resolve_tariff_profile, tou_period, validate_tariff_selection,
 )
@@ -189,7 +189,7 @@ def test_configured_coordinator_uses_current_policy_and_authoritative_usage(monk
 def test_tariff_entity_keeps_unique_id_but_uses_unit_price_semantics():
     description = next(item for item in sensor.CURRENT_DESCRIPTIONS if item.suffix == SUFFIX_CURRENT_LADDER_TARIFF)
     entity = sensor.CSGSensor(SimpleNamespace(data={}, last_update_success=True), "fictional-tariff-account", description)
-    assert entity.unique_id == "csg.fictional-tariff-account.current_ladder_tariff"
+    assert entity.unique_id == "csg_plus.fictional-tariff-account.current_ladder_tariff"
     assert entity.native_unit_of_measurement == "CNY/kWh"
     assert entity.device_class is None
     assert entity.state_class is SensorStateClass.MEASUREMENT

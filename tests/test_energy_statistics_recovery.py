@@ -16,18 +16,18 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from homeassistant.helpers import storage as ha_storage
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 
-import custom_components.csg as integration
-from custom_components.csg import energy_statistics as energy, sensor
-from custom_components.csg import history_coordinator as history
-from custom_components.csg.const import (
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import energy_statistics as energy, sensor
+from custom_components.csg_plus import history_coordinator as history
+from custom_components.csg_plus.const import (
     CONF_AUTH_TOKEN, CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
     CONF_UPDATE_INTERVAL, DOMAIN,
 )
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 from test_energy_statistics_unload import Cloud, DAY, write
 from test_energy_statistics_pending import wait_entered
-from custom_components.csg.energy_statistics import build_statistics, statistic_metadata
-from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg_plus.energy_statistics import build_statistics, statistic_metadata
+from custom_components.csg_plus.history_store import CSGHistoryStore
 
 
 @pytest.fixture

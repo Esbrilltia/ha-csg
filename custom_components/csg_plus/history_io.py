@@ -13,6 +13,8 @@ from weakref import WeakValueDictionary
 
 from homeassistant.core import HomeAssistant
 
+from .const import DOMAIN
+
 
 class _StorageLane:
     """Keep submission order until the actual worker function has returned.
@@ -43,7 +45,7 @@ class _StorageLane:
                 # joins an indefinitely blocked disk thread. While it lives its
                 # bound target keeps the weakly registered path lane alive.
                 self._worker = threading.Thread(
-                    target=self.run, name="csg-history-storage", daemon=True,
+                    target=self.run, name=f"{DOMAIN}-history-storage", daemon=True,
                 )
                 try:
                     self._worker.start()

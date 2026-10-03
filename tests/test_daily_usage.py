@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.const import STATE_UNAVAILABLE
 
-from custom_components.csg.const import (
+from custom_components.csg_plus.const import (
     ATTR_KEY_CURRENT_LADDER_START_DATE,
     ATTR_KEY_SETTLEMENT_DATE,
     CONF_SETTINGS,
@@ -22,8 +22,8 @@ from custom_components.csg.const import (
     SUFFIX_LATEST_DAY_KWH,
     SUFFIX_YESTERDAY_KWH,
 )
-from custom_components.csg.csg_client import CSGClient
-from custom_components.csg.sensor import (
+from custom_components.csg_plus.csg_client import CSGClient
+from custom_components.csg_plus.sensor import (
     BILLING_DESCRIPTIONS, CURRENT_DESCRIPTIONS, BillingCoordinator, CSGSensor, CurrentCoordinator,
     RealtimeCoordinator,
 )

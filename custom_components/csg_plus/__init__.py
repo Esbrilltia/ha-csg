@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""The China Southern Power Grid Statistics integration."""
+"""The CSG Statistics Plus integration."""
 from __future__ import annotations
 
 import logging
@@ -38,7 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up China Southern Power Grid Statistics from a config entry."""
+    """Set up CSG Statistics Plus from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     # validate session, re-authenticate if needed

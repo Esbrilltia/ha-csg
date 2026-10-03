@@ -13,7 +13,7 @@ import pytest
 from homeassistant.components.recorder.statistics import async_add_external_statistics
 from homeassistant.components.recorder.tasks import ImportStatisticsTask
 
-from custom_components.csg.energy_statistics import build_statistics, statistic_metadata
+from custom_components.csg_plus.energy_statistics import build_statistics, statistic_metadata
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 
 

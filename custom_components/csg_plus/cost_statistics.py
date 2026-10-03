@@ -29,7 +29,7 @@ def cost_statistic_metadata(account_number: str) -> StatisticMetaData:
     return StatisticMetaData(
         source=DOMAIN,
         statistic_id=f"{DOMAIN}:cost_{digest}",
-        name=f"CSG cost {digest[:8]}",
+        name=f"CSG Plus cost {digest[:8]}",
         unit_of_measurement=None,
         unit_class=None,
         mean_type=StatisticMeanType.NONE,

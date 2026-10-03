@@ -11,11 +11,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from custom_components.csg import sensor
-from custom_components.csg.csg_client import CSGClient, CSGElectricityAccount, CSGAPIError
-from custom_components.csg.csg_client.const import JSON_KEY_YEAR_MONTH, JSON_KEY_STA
-from custom_components.csg.history_helpers import collect_monthly_bill_candidates
-from custom_components.csg.history_store import MONTHLY_BILL_SOURCE
+from custom_components.csg_plus import sensor
+from custom_components.csg_plus.csg_client import CSGClient, CSGElectricityAccount, CSGAPIError
+from custom_components.csg_plus.csg_client.const import JSON_KEY_YEAR_MONTH, JSON_KEY_STA
+from custom_components.csg_plus.history_helpers import collect_monthly_bill_candidates
+from custom_components.csg_plus.history_store import MONTHLY_BILL_SOURCE
 from test_history_store_integration import rig as recent_rig
 
 
@@ -60,7 +60,7 @@ def test_bill_batches_request_bridge_after_all_upserts_independently_of_changes(
 
 
 def test_production_never_reaches_retired_charge_apis_or_energy_preferences():
-    root = Path(__file__).parents[1] / "custom_components" / "csg"
+    root = Path(__file__).parents[1] / "custom_components" / "csg_plus"
     forbidden = {"get_month_daily_cost_detail", "get_yesterday_kwh", "api_query_day_electric_charge_by_m_point", "async_adjust_statistics", "async_clear_statistics"}
     for path in root.rglob("*.py"):
         if "csg_client" in path.parts or path.name == "csg_client_demo.py":

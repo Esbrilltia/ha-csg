@@ -828,8 +828,8 @@ wheels = [
 ]
 
 [[package]]
-name = "ha-csg"
-version = "2.0.0"
+name = "ha-csg-plus"
+version = "3.0.0-beta.1"
 source = { virtual = "." }
 dependencies = [
     { name = "brotli" },

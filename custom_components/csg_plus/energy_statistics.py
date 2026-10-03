@@ -38,7 +38,7 @@ _ABS_TOL = 1e-9
 # Read the entire series, including rows outside the Store's known date range,
 # so an extra earlier/later row cannot escape the non-destructive anomaly gate.
 _QUERY_START = dt.datetime.min.replace(tzinfo=dt.UTC)
-_IMPORT_LANES = "csg_energy_import_lanes"
+_IMPORT_LANES = f"{DOMAIN}_energy_import_lanes"
 _CONFIRMATION_TIMEOUT = 30
 _FINALIZATION_TIMEOUT = 60
 
@@ -68,7 +68,7 @@ def statistic_metadata(account_number: str) -> StatisticMetaData:
     return StatisticMetaData(
         source=DOMAIN,
         statistic_id=f"{DOMAIN}:energy_{digest}",
-        name=f"CSG energy {digest[:8]}",
+        name=f"CSG Plus energy {digest[:8]}",
         unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         unit_class=EnergyConverter.UNIT_CLASS,
         mean_type=StatisticMeanType.NONE,

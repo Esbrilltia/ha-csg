@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.csg.csg_client import CSGClient, JSON_KEY_YEAR_MONTH
-from custom_components.csg.history_helpers import collect_monthly_bill_candidates
+from custom_components.csg_plus.csg_client import CSGClient, JSON_KEY_YEAR_MONTH
+from custom_components.csg_plus.history_helpers import collect_monthly_bill_candidates
 
 ACCOUNT = SimpleNamespace(area_code="synthetic-area", ele_customer_id="synthetic-customer", metering_point_id="synthetic-meter")
 INVALID = [None, True, False, "bad", "", "NaN", float("nan"), "inf", float("inf"), float("-inf"), -1]

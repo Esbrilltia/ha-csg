@@ -17,12 +17,12 @@ import pytest
 from homeassistant.components.recorder import statistics as ha_statistics
 from homeassistant.config_entries import ConfigEntryState
 
-import custom_components.csg as integration
-from custom_components.csg import energy_statistics as module, sensor
-from custom_components.csg.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, CONF_TARIFF_PROFILES
-from custom_components.csg.cost_statistics import build_cost_statistics, cost_statistic_metadata
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge
-from custom_components.csg.history_store import CSGHistoryStore
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import energy_statistics as module, sensor
+from custom_components.csg_plus.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, CONF_TARIFF_PROFILES
+from custom_components.csg_plus.cost_statistics import build_cost_statistics, cost_statistic_metadata
+from custom_components.csg_plus.energy_statistics import EnergyStatisticsBridge
+from custom_components.csg_plus.history_store import CSGHistoryStore
 from test_cost_statistics_recorder import cost_world
 from test_energy_statistics_pending import blocked_import, wait_entered
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
@@ -350,7 +350,7 @@ def test_explicit_false_has_zero_integration_recorder_access_while_tariff_works(
             CONF_TARIFF_PROFILES: {ACCOUNT: {"scheme": "combined", "multi_person": False, "tou": False}},
         }})
         # The synthetic account is explicitly marked as Guangzhou for tariff.
-        from custom_components.csg.const import CONF_ELE_ACCOUNTS
+        from custom_components.csg_plus.const import CONF_ELE_ACCOUNTS
         accounts = deepcopy(base.entry.data[CONF_ELE_ACCOUNTS])
         accounts[ACCOUNT]["area_code"] = "080000"
         base.hass.config_entries.async_update_entry(base.entry, data={**base.entry.data, CONF_ELE_ACCOUNTS: accounts})

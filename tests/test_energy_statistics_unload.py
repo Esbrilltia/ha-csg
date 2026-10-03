@@ -12,14 +12,14 @@ from homeassistant.const import CONF_USERNAME
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-import custom_components.csg as integration
-from custom_components.csg import energy_statistics as energy, sensor
-from custom_components.csg.const import (
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import energy_statistics as energy, sensor
+from custom_components.csg_plus.const import (
     CONF_AUTH_TOKEN, CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH,
     CONF_SETTINGS, CONF_UPDATE_INTERVAL, DOMAIN,
 )
-from custom_components.csg.history_coordinator import HistoryCoordinator
-from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg_plus.history_coordinator import HistoryCoordinator
+from custom_components.csg_plus.history_store import CSGHistoryStore
 from test_energy_statistics_pending import blocked_import, wait_entered
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 
@@ -192,7 +192,7 @@ def test_four_audit_cases(recorder_world, monkeypatch, history_drain, old_import
                         monkeypatch.setattr(integration.CSGClient, "load", lambda _: history_cloud)
                         # Freeze only range planning; the real History fetch,
                         # cancellation and physical request drain are exercised.
-                        monkeypatch.setattr("custom_components.csg.history_coordinator.historical_months", lambda *a: [(2026, 9)])
+                        monkeypatch.setattr("custom_components.csg_plus.history_coordinator.historical_months", lambda *a: [(2026, 9)])
                         history = runtime["history_coordinator"] = HistoryCoordinator(
                             world.hass, world.entry, runtime["history_store"], bridge,
                         )
@@ -246,7 +246,7 @@ def test_realtime_tail_and_multiple_producers(recorder_world, monkeypatch, multi
                 if multiple:
                     world.entry.data[CONF_SETTINGS][CONF_HISTORY_START_MONTH] = "2026-09"
                     monkeypatch.setattr(integration.CSGClient, "load", lambda _: history_cloud)
-                    monkeypatch.setattr("custom_components.csg.history_coordinator.historical_months", lambda *a: [(2026, 9)])
+                    monkeypatch.setattr("custom_components.csg_plus.history_coordinator.historical_months", lambda *a: [(2026, 9)])
                     history = runtime["history_coordinator"] = HistoryCoordinator(world.hass, world.entry, runtime["history_store"], bridge)
                     history.start()
                     await wait_entered(history_cloud.entered)

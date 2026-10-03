@@ -44,7 +44,7 @@
       "qr_not_scanned": "请扫描二维码并完成登录",
       "unknown": "未知错误：{error_detail}"
     },
-    "abort": {"reauth_successful": "登录成功", "already_configured": "账号已添加，请勿重复添加"}
+    "abort": {"reauth_successful": "登录成功", "already_configured": "账号已添加，请勿重复添加", "unique_id_mismatch": "请使用此集成配置原来的账号重新登录。"}
   },
   "options": {
     "step": {

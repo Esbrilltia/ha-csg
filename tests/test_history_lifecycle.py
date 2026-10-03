@@ -18,16 +18,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import storage as ha_storage
 from homeassistant.util import json as json_util
 
-from custom_components.csg import history_coordinator as coordinator_module
-from custom_components.csg import history_store as store_module
-from custom_components.csg.const import (
+from custom_components.csg_plus import history_coordinator as coordinator_module
+from custom_components.csg_plus import history_store as store_module
+from custom_components.csg_plus.const import (
     CONF_AUTH_TOKEN, CONF_ELE_ACCOUNTS, CONF_HISTORY_START_MONTH, CONF_SETTINGS,
     CONF_UPDATE_INTERVAL, DOMAIN,
 )
-from custom_components.csg.csg_client import CSGClient, CSGElectricityAccount
-from custom_components.csg.history_coordinator import HistoryCoordinator
-from custom_components.csg.history_io import HistoryStorageHass, _StorageLane
-from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg_plus.csg_client import CSGClient, CSGElectricityAccount
+from custom_components.csg_plus.history_coordinator import HistoryCoordinator
+from custom_components.csg_plus.history_io import HistoryStorageHass, _StorageLane
+from custom_components.csg_plus.history_store import CSGHistoryStore
 
 ACCOUNT = "fictional-lifecycle"
 MONTH = (2024, 2)
@@ -71,7 +71,7 @@ def worlds(monkeypatch, tmp_path):
         hass = HomeAssistant(str(path))
         cloud = Cloud()
         entry = ConfigEntry(
-            version=1, minor_version=1, domain="csg", title="Synthetic lifecycle",
+            version=1, minor_version=1, domain="csg_plus", title="Synthetic lifecycle",
             data={
                 CONF_AUTH_TOKEN: "synthetic", CONF_SETTINGS: {CONF_HISTORY_START_MONTH: "2024-02"},
                 CONF_USERNAME: "synthetic-user",
@@ -92,8 +92,8 @@ def worlds(monkeypatch, tmp_path):
 
 def test_config_entry_cleanup_repeats_manual_billing_shutdown_safely(worlds, monkeypatch):
     """Manual unload followed by HA's real entry callbacks cancels each timer once."""
-    import custom_components.csg as integration
-    from custom_components.csg import sensor
+    import custom_components.csg_plus as integration
+    from custom_components.csg_plus import sensor
 
     async def scenario():
         hass, store, history, _ = await worlds()

@@ -29,11 +29,11 @@ from homeassistant.helpers.recorder import async_initialize_recorder
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
-from custom_components.csg import energy_statistics as module
-from custom_components.csg.const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
-from custom_components.csg.csg_client import CSGElectricityAccount
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge, build_statistics, statistic_metadata
-from custom_components.csg.history_store import CSGHistoryStore
+from custom_components.csg_plus import energy_statistics as module
+from custom_components.csg_plus.const import CONF_ELE_ACCOUNTS, CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS
+from custom_components.csg_plus.csg_client import CSGElectricityAccount
+from custom_components.csg_plus.energy_statistics import EnergyStatisticsBridge, build_statistics, statistic_metadata
+from custom_components.csg_plus.history_store import CSGHistoryStore
 
 ACCOUNT = "fictional-recorder-account"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -56,7 +56,7 @@ def recorder_world(tmp_path, monkeypatch):
         hass.config_entries = ConfigEntries(hass, {})
         store = CSGHistoryStore(hass, "synthetic-energy-entry")
         entry = ConfigEntry(
-            version=1, minor_version=1, domain="csg", title="Synthetic energy",
+            version=1, minor_version=1, domain="csg_plus", title="Synthetic energy",
             data={CONF_SETTINGS: {CONF_ENERGY_STATISTICS_ENABLED: True},
                   CONF_ELE_ACCOUNTS: {ACCOUNT: CSGElectricityAccount(ACCOUNT).dump()}},
             options={}, source="user", unique_id=None, discovery_keys={}, subentries_data=None,
@@ -199,7 +199,7 @@ def test_real_statistics_listing_and_energy_validation_accept_external_without_e
             )
             assert len(listed) == 1
             assert listed[0]["statistic_id"] == world.statistic_id
-            assert listed[0]["source"] == "csg" and listed[0]["has_sum"] is True
+            assert listed[0]["source"] == "csg_plus" and listed[0]["has_sum"] is True
             assert listed[0]["unit_class"] == "energy" and listed[0]["statistics_unit_of_measurement"] == "kWh"
             assert not valid_entity_id(world.statistic_id) and world.hass.states.get(world.statistic_id) is None
             manager = await energy_data.async_get_manager(world.hass)

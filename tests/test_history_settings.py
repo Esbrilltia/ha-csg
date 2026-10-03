@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from custom_components.csg.config_flow import CSGOptionsFlowHandler
-from custom_components.csg.const import (
+from custom_components.csg_plus.config_flow import CSGOptionsFlowHandler
+from custom_components.csg_plus.const import (
     CONF_BILLING_UPDATE_TIME, CONF_HISTORY_START_MONTH, CONF_SETTINGS, CONF_UPDATE_INTERVAL,
 )
 
@@ -56,7 +56,7 @@ def test_optional_history_schema_allows_empty_or_omitted_to_disable():
 
 
 def test_history_translations_explain_permission_bound_and_empty_setting():
-    root = Path(__file__).parents[1] / "custom_components" / "csg"
+    root = Path(__file__).parents[1] / "custom_components" / "csg_plus"
     for name in ("strings.json", "translations/en.json", "translations/zh-Hans.json"):
         data = json.loads((root / name).read_text(encoding="utf-8"))["options"]
         setting = data["step"]["settings"]

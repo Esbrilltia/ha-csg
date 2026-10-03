@@ -15,12 +15,12 @@ from homeassistant.components.recorder import statistics as ha_statistics
 from homeassistant.components.recorder.tasks import ImportStatisticsTask
 from homeassistant.const import CONF_USERNAME
 
-import custom_components.csg as integration
-from custom_components.csg import sensor
-from custom_components.csg.const import (
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import sensor
+from custom_components.csg_plus.const import (
     CONF_AUTH_TOKEN, CONF_SETTINGS, CONF_UPDATE_INTERVAL, DOMAIN,
 )
-from custom_components.csg.energy_statistics import EnergyStatisticsBridge, build_statistics
+from custom_components.csg_plus.energy_statistics import EnergyStatisticsBridge, build_statistics
 from test_energy_statistics_recorder import ACCOUNT, recorder_world
 
 DAY1 = "2026-09-01"
@@ -242,7 +242,7 @@ def test_real_global_stop_cancels_confirmation_without_persistent_ack(recorder_w
 
 @pytest.mark.parametrize("failure", ["query", "stopping", "timeout", "system"])
 def test_real_unconfirmed_ownership_survives_failed_waiter(recorder_world, monkeypatch, failure):
-    from custom_components.csg import energy_statistics as module
+    from custom_components.csg_plus import energy_statistics as module
 
     class SystemFailure(BaseException):
         pass
@@ -300,7 +300,7 @@ def test_real_unconfirmed_ownership_survives_failed_waiter(recorder_world, monke
 
 def test_real_confirmation_during_startup_before_stop_flag_initialization(recorder_world, monkeypatch):
     """DB/Recorder-ready callbacks precede startup task processing in Core."""
-    from custom_components.csg import energy_statistics as module
+    from custom_components.csg_plus import energy_statistics as module
 
     async def scenario():
         async with recorder_world() as world:
@@ -385,7 +385,7 @@ def test_real_shutdown_caller_cancellation_preserves_old_import_ownership(record
 
 @pytest.mark.parametrize("stage", ["final_snapshot", "final_query", "finishing"])
 def test_real_request_at_final_verification_or_worker_finish(recorder_world, monkeypatch, stage):
-    from custom_components.csg import energy_statistics as module
+    from custom_components.csg_plus import energy_statistics as module
 
     async def scenario():
         async with recorder_world() as world:

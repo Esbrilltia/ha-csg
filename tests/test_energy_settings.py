@@ -8,9 +8,9 @@ from unittest.mock import Mock
 import pytest
 import voluptuous as vol
 
-from custom_components.csg.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, CONF_UPDATE_INTERVAL
+from custom_components.csg_plus.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_SETTINGS, CONF_UPDATE_INTERVAL
 from test_history_settings import make_flow
-from custom_components.csg.config_flow import CSGConfigFlow
+from custom_components.csg_plus.config_flow import CSGConfigFlow
 
 
 def test_energy_setting_defaults_on_and_accepts_only_boolean():
@@ -63,7 +63,7 @@ def test_missing_field_is_saved_enabled_when_editing_other_settings():
 
 
 def test_energy_setting_translations_include_retention_and_manual_selection():
-    root = Path(__file__).parents[1] / "custom_components" / "csg"
+    root = Path(__file__).parents[1] / "custom_components" / "csg_plus"
     for name in ("strings.json", "translations/en.json", "translations/zh-Hans.json"):
         setting = json.loads((root / name).read_text(encoding="utf-8"))["options"]["step"]["settings"]
         assert setting["data"][CONF_ENERGY_STATISTICS_ENABLED]

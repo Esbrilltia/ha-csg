@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-import custom_components.csg as integration
-from custom_components.csg import energy_statistics
-from custom_components.csg.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH, CONF_SETTINGS, DOMAIN
+import custom_components.csg_plus as integration
+from custom_components.csg_plus import energy_statistics
+from custom_components.csg_plus.const import CONF_ENERGY_STATISTICS_ENABLED, CONF_HISTORY_START_MONTH, CONF_SETTINGS, DOMAIN
 from test_history_coordinator import rig as history_rig
 from test_history_store_integration import rig as recent_rig
 

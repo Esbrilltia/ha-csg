@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 
-ROOT = Path(__file__).parents[1] / "custom_components" / "csg"
+ROOT = Path(__file__).parents[1] / "custom_components" / "csg_plus"
 PLACEHOLDER_PATTERN = re.compile(r"{([a-z_]+)}")
 
 
