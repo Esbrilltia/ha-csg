@@ -233,13 +233,11 @@ After a standalone build is published, add this repository to
 then install **CSG Statistics Plus** and restart Home Assistant. The package
 contains one integration: `custom_components/csg_plus`.
 
-The current repository is [Esbrilltia/ha-csg](https://github.com/Esbrilltia/ha-csg).
-The intended canonical repository is
+The current canonical repository is
 [Esbrilltia/ha-csg-plus](https://github.com/Esbrilltia/ha-csg-plus/), with
 [its issue tracker](https://github.com/Esbrilltia/ha-csg-plus/issues).
-Those final URLs may not be available until the separately authorized repository
-rename after M7 audit. This milestone prepares `3.0.0-beta.1` packaging and does
-not publish a tag, release or HACS beta.
+The repository rename is complete. Candidate `3.0.0-beta.1` has not been tagged,
+released or published as a HACS beta.
 
 ## Moving from upstream csg
 

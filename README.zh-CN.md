@@ -193,11 +193,10 @@ HACS metadata 的最低 HA 版本也为 **`2026.9.3`**。其他 Core 版本未�
 自定义仓库，安装 **CSG Statistics Plus** 并重启 Home Assistant。
 安装包只包含一个集成：`custom_components/csg_plus`。
 
-当前仓库为 [Esbrilltia/ha-csg](https://github.com/Esbrilltia/ha-csg)，预定最终仓库为
+当前 canonical 仓库为
 [Esbrilltia/ha-csg-plus](https://github.com/Esbrilltia/ha-csg-plus/)，
-[问题反馈入口](https://github.com/Esbrilltia/ha-csg-plus/issues) 随之变更。
-这些最终 URL 可能需待 M7 审计通过、另行授权仓库 rename 后才可用。
-本里程碑准备 `3.0.0-beta.1` 包装，不创建 tag、release 或发布 HACS beta。
+[问题反馈入口](https://github.com/Esbrilltia/ha-csg-plus/issues) 已使用当前仓库地址。
+仓库重命名已完成。候选版本 `3.0.0-beta.1` 尚未创建 tag、release 或发布 HACS beta。
 
 ## 从上游 csg 迁移
 
