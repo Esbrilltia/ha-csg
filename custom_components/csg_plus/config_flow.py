@@ -370,10 +370,14 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def check_and_set_unique_id(self, username: str):
-        """set unique id for the config entry, abort if already configured"""
+        """Set the account identity, allowing only the matching reauth entry."""
         # TODO: username (mobile) may not be the best unique id
         unique_id = f"{DOMAIN}-{username}"
-        await self.async_set_unique_id(unique_id)
+        existing_entry = await self.async_set_unique_id(unique_id)
+        if self._reauth_entry is not None:
+            self._abort_if_unique_id_mismatch()
+            if existing_entry is self._reauth_entry:
+                return
         self._abort_if_unique_id_configured()
 
     async def create_or_update_config_entry(

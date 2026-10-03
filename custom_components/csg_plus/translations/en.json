@@ -44,7 +44,7 @@
       "qr_not_scanned": "Scan the QR code and complete sign-in",
       "unknown": "Unexpected error: {error_detail}"
     },
-    "abort": {"reauth_successful": "Reauthentication successful", "already_configured": "This account is already configured"}
+    "abort": {"reauth_successful": "Reauthentication successful", "already_configured": "This account is already configured", "unique_id_mismatch": "Sign in with the same account as this integration entry."}
   },
   "options": {
     "step": {
