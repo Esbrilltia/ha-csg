@@ -129,14 +129,9 @@ if __name__ == "__main__":
     bal, arr = client.get_balance_and_arrears(account)
     print(f"账户 {account.account_number}, 余额: {bal}, 欠费: {arr}")
     input("按回车获取当前月份每日用电数据")
-    (
-        month_total_cost,
-        month_total_kwh,
-        ladder,
-        by_day,
-    ) = client.get_month_daily_cost_detail(
+    month_total_kwh, by_day = client.get_month_daily_usage_detail(
         account, (datetime.datetime.now().year, datetime.datetime.now().month)
     )
     print(
-        f"账户 {account.account_number}, 当月总电费: {month_total_cost}, 当月总电量: {month_total_kwh}kWh, 当前阶梯: {ladder}, 每日数据: {by_day}"
+        f"账户 {account.account_number}, 当月总电量: {month_total_kwh}kWh, 每日用电事实/标记: {by_day}"
     )

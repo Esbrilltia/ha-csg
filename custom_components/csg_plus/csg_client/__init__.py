@@ -9,9 +9,11 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import random
 import time
 from base64 import b64decode, b64encode
+from collections.abc import Mapping
 from copy import copy
 from hashlib import md5
 from typing import Any
@@ -229,10 +231,8 @@ class CSGClient:
         can automatically add authentication header(s)
         """
         _LOGGER.debug(
-            "_make_request: %s, data=%s, auth=%s, method=%s",
+            "_make_request: %s, method=%s",
             path,
-            payload,
-            with_auth,
             method,
         )
         url = base_path + path
@@ -259,9 +259,8 @@ class CSGClient:
             json_data = json.loads(json_str)
             response_data = json_data
             _LOGGER.debug(
-                "_make_request: %s, response: %s",
+                "_make_request: %s, response received",
                 path,
-                json.dumps(response_data, ensure_ascii=False),
             )
 
             # headers need to be returned since they may contain additional data
@@ -272,10 +271,8 @@ class CSGClient:
     def _handle_unsuccessful_response(self, api_path: str, response_data: dict):
         """Handles sta=!RESP_STA_SUCCESS"""
         _LOGGER.debug(
-            "Account customer number: %s, unsuccessful response while calling %s: %s",
-            self.customer_number,
+            "Unsuccessful API response while calling %s",
             api_path,
-            response_data,
         )
 
         if response_data[JSON_KEY_STA] == RESP_STA_NO_LOGIN:
@@ -674,7 +671,11 @@ class CSGClient:
     def get_month_daily_usage_detail(
         self, account: CSGElectricityAccount, year_month: tuple[int, int]
     ) -> tuple[float, list[dict[str, str | float]]]:
-        """Get daily usage of current month"""
+        """Get monthly daily facts and date-only markers for invalid observations.
+
+        A marker preserves upstream coverage for tariff completeness; it has
+        no kWh and must never be stored or displayed as a daily usage fact.
+        """
 
         year, month = year_month
 
@@ -688,9 +689,23 @@ class CSGClient:
         month_total_kwh = float(resp_data["totalPower"])
         by_day = []
         for d_data in resp_data["result"]:
-            by_day.append(
-                {WF_ATTR_DATE: d_data["date"], WF_ATTR_KWH: float(d_data["power"])}
-            )
+            if not isinstance(d_data, Mapping):
+                continue
+            try:
+                day = datetime.date.fromisoformat(d_data.get("date"))
+            except (TypeError, ValueError):
+                continue
+            row: dict[str, str | float] = {WF_ATTR_DATE: day.isoformat()}
+            by_day.append(row)
+            power = d_data.get("power")
+            if isinstance(power, bool):
+                continue
+            try:
+                daily_kwh = float(power)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(daily_kwh) and daily_kwh >= 0:
+                row[WF_ATTR_KWH] = daily_kwh
         return month_total_kwh, by_day
 
     def get_month_daily_cost_detail(
@@ -785,13 +800,22 @@ class CSGClient:
         total_year_charge = resp_data["totalActualAmount"]
         by_month = []
         for m_data in resp_data["electricAndChargeList"]:
-            by_month.append(
-                {
-                    WF_ATTR_MONTH: m_data[JSON_KEY_YEAR_MONTH],
-                    WF_ATTR_CHARGE: float(m_data["actualTotalAmount"]),
-                    WF_ATTR_KWH: float(m_data["billingElectricity"]),
-                }
-            )
+            if not isinstance(m_data, Mapping) or JSON_KEY_YEAR_MONTH not in m_data:
+                continue
+            row = {WF_ATTR_MONTH: m_data[JSON_KEY_YEAR_MONTH]}
+            for raw_key, key in (
+                ("actualTotalAmount", WF_ATTR_CHARGE), ("billingElectricity", WF_ATTR_KWH)
+            ):
+                value = m_data.get(raw_key)
+                if value is None or isinstance(value, bool):
+                    continue
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(number) and number >= 0:
+                    row[key] = number
+            by_month.append(row)
         return float(total_year_charge), float(total_year_kwh), by_month
 
     def get_yesterday_kwh(self, account: CSGElectricityAccount) -> float:

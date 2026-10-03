@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 import voluptuous as vol
@@ -28,10 +30,14 @@ from .const import (
     CONF_AUTH_TOKEN,
     CONF_BILLING_UPDATE_TIME,
     CONF_ELE_ACCOUNTS,
+    CONF_ENERGY_STATISTICS_ENABLED,
+    DEFAULT_ENERGY_STATISTICS_ENABLED,
     CONF_GENERAL_ERROR,
+    CONF_HISTORY_START_MONTH,
     CONF_LOGIN_TYPE,
     CONF_REFRESH_QR_CODE,
     CONF_SETTINGS,
+    CONF_TARIFF_PROFILES,
     CONF_SMS_CODE,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATED_AT,
@@ -49,6 +55,8 @@ from .const import (
     STEP_INIT,
     STEP_QR_LOGIN,
     STEP_SETTINGS,
+    STEP_TARIFF_ACCOUNT,
+    STEP_TARIFF_PROFILE,
     STEP_SMS_LOGIN,
     STEP_SMS_PWD_LOGIN,
     STEP_USER,
@@ -62,6 +70,8 @@ from .csg_client import (
     InvalidCredentials,
     LoginType,
 )
+from .history_helpers import month_key, parse_history_start_month
+from .tariff import GUANGZHOU_AREA_CODE, SCHEME_UNCONFIGURED, validate_tariff_selection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -164,7 +174,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except RequestException:
                 errors[CONF_GENERAL_ERROR] = ERROR_CANNOT_CONNECT
             except Exception as ge:
-                _LOGGER.exception("Unexpected exception when sending sms code")
+                _LOGGER.error("Unexpected exception when sending sms code: %s", type(ge).__name__)
                 errors[CONF_GENERAL_ERROR] = ERROR_UNKNOWN
                 error_detail = str(ge)
             else:
@@ -211,7 +221,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors[CONF_GENERAL_ERROR] = ERROR_INVALID_AUTH
             error_detail = str(ice)
         except Exception as ge:
-            _LOGGER.exception("Unexpected exception during login validation")
+            _LOGGER.error("Unexpected exception during login validation: %s", type(ge).__name__)
             errors[CONF_GENERAL_ERROR] = ERROR_UNKNOWN
             error_detail = str(ge)
         else:
@@ -268,7 +278,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors={CONF_GENERAL_ERROR: ERROR_CANNOT_CONNECT},
                 )
             except Exception as err:
-                _LOGGER.exception("Unexpected exception when creating QR code")
+                _LOGGER.error("Unexpected exception when creating QR code: %s", type(err).__name__)
                 return self.async_show_form(
                     step_id=STEP_QR_LOGIN,
                     data_schema=vol.Schema(
@@ -322,7 +332,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 },
             )
         except Exception as err:
-            _LOGGER.exception("Unexpected exception when checking QR code")
+            _LOGGER.error("Unexpected exception when checking QR code: %s", type(err).__name__)
             return self.async_show_form(
                 step_id=STEP_QR_LOGIN,
                 data_schema=vol.Schema(
@@ -360,10 +370,14 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def check_and_set_unique_id(self, username: str):
-        """set unique id for the config entry, abort if already configured"""
+        """Set the account identity, allowing only the matching reauth entry."""
         # TODO: username (mobile) may not be the best unique id
-        unique_id = f"CSG-{username}"
-        await self.async_set_unique_id(unique_id)
+        unique_id = f"{DOMAIN}-{username}"
+        existing_entry = await self.async_set_unique_id(unique_id)
+        if self._reauth_entry is not None:
+            self._abort_if_unique_id_mismatch()
+            if existing_entry is self._reauth_entry:
+                return
         self._abort_if_unique_id_configured()
 
     async def create_or_update_config_entry(
@@ -379,6 +393,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ELE_ACCOUNTS: {},
             CONF_SETTINGS: {
                 CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
+                CONF_ENERGY_STATISTICS_ENABLED: DEFAULT_ENERGY_STATISTICS_ENABLED,
             },
             CONF_UPDATED_AT: str(int(time.time() * 1000)),
         }
@@ -397,7 +412,7 @@ class CSGConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # check if account already exists
 
         return self.async_create_entry(
-            title=f"CSG-{username}",
+            title=f"CSG Plus-{username}",
             data=data,
         )
 
@@ -425,6 +440,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         """Retain the entry for Home Assistant versions before OptionsFlow exposed it."""
         self._legacy_config_entry = config_entry
         self.all_electricity_accounts: list[CSGElectricityAccount] = []
+        self._tariff_account_number: str | None = None
 
     @property
     def _entry(self) -> config_entries.ConfigEntry:
@@ -438,7 +454,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_menu(
             step_id=STEP_INIT,
-            menu_options=[STEP_ADD_ACCOUNT, STEP_SETTINGS],
+            menu_options=[STEP_ADD_ACCOUNT, STEP_SETTINGS, STEP_TARIFF_ACCOUNT],
         )
 
     async def async_step_add_account(
@@ -464,6 +480,15 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                             account_num_to_add: account.dump(),
                         },
                     }
+                    # An added account starts unconfigured, including an account
+                    # removed earlier that still has a stale saved selection.
+                    settings = dict(self._entry.data[CONF_SETTINGS])
+                    selections = settings.get(CONF_TARIFF_PROFILES)
+                    if isinstance(selections, Mapping):
+                        selections = deepcopy(dict(selections))
+                        selections.pop(account_num_to_add, None)
+                        settings[CONF_TARIFF_PROFILES] = selections
+                    new_data[CONF_SETTINGS] = settings
                     # this must be set or update won't be detected
                     new_data[CONF_UPDATED_AT] = str(int(time.time() * 1000))
                     self.hass.config_entries.async_update_entry(
@@ -471,11 +496,8 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                         data=new_data,
                     )
                     _LOGGER.info(
-                        "Added ele account to %s: %s",
-                        self._entry.data[CONF_USERNAME],
-                        account_num_to_add,
+                        "Added a linked electricity account; reloading entry",
                     )
-                    _LOGGER.info("Reloading entry because of new added account")
                     await self.hass.config_entries.async_reload(
                         self._entry.entry_id
                     )
@@ -502,10 +524,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         )
         self.all_electricity_accounts = accounts
         if not accounts:
-            _LOGGER.warning(
-                "No linked ele accounts found in csg account %s",
-                self._entry.data[CONF_USERNAME],
-            )
+            _LOGGER.warning("No linked electricity accounts found")
             return self.async_abort(reason=ABORT_NO_ACCOUNT)
         selections = {}
         for account in accounts:
@@ -515,10 +534,7 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                     f"{account.account_number} ({account.user_name} {account.address})"
                 )
         if not selections:
-            _LOGGER.info(
-                "Account %s: no ele account to add (all already added), abort",
-                self._entry.data[CONF_USERNAME],
-            )
+            _LOGGER.info("All linked electricity accounts are already added")
             return self.async_abort(reason=ABORT_ALL_ADDED)
 
         schema = vol.Schema(
@@ -531,6 +547,77 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=schema,
         )
 
+    async def async_step_tariff_account(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Choose a supported account without guessing its billing policy."""
+        accounts = {
+            account.account_number: account.account_number
+            for value in self._entry.data[CONF_ELE_ACCOUNTS].values()
+            if (account := CSGElectricityAccount.load(value)).area_code == GUANGZHOU_AREA_CODE
+        }
+        if not accounts:
+            return self.async_abort(reason="no_supported_tariff_accounts")
+        errors = {}
+        if user_input is not None:
+            number = user_input.get(CONF_ACCOUNT_NUMBER)
+            if number in accounts:
+                self._tariff_account_number = number
+                return await self.async_step_tariff_profile()
+            errors[CONF_ACCOUNT_NUMBER] = "invalid_tariff_account"
+        return self.async_show_form(
+            step_id=STEP_TARIFF_ACCOUNT,
+            data_schema=vol.Schema({vol.Required(CONF_ACCOUNT_NUMBER): vol.In(accounts)}),
+            errors=errors,
+        )
+
+    async def async_step_tariff_profile(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """Save an explicit supported selection; official bills are unaffected."""
+        number = self._tariff_account_number
+        if number is None:
+            return await self.async_step_tariff_account()
+        settings = self._entry.data[CONF_SETTINGS]
+        selections = settings.get(CONF_TARIFF_PROFILES, {})
+        try:
+            current = validate_tariff_selection(selections.get(number, {}))
+        except (ValueError, TypeError, AttributeError):
+            current = {"scheme": SCHEME_UNCONFIGURED, "multi_person": False, "tou": False}
+        errors = {}
+        if user_input is not None:
+            try:
+                choice = validate_tariff_selection(user_input)
+            except (ValueError, TypeError):
+                errors[CONF_GENERAL_ERROR] = "invalid_tariff_profile"
+            else:
+                new_selections = deepcopy(dict(selections)) if isinstance(selections, Mapping) else {}
+                new_selections[number] = choice
+                new_data = {
+                    **self._entry.data,
+                    CONF_SETTINGS: {**settings, CONF_TARIFF_PROFILES: new_selections},
+                    CONF_UPDATED_AT: str(int(time.time() * 1000)),
+                }
+                self.hass.config_entries.async_update_entry(self._entry, data=new_data)
+                await self.hass.config_entries.async_reload(self._entry.entry_id)
+                return self.async_create_entry(title="", data={})
+        return self.async_show_form(
+            step_id=STEP_TARIFF_PROFILE,
+            data_schema=vol.Schema({
+                vol.Required("scheme", default=current["scheme"]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=["unconfigured", "ladder", "combined"],
+                        translation_key="tariff_scheme",
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Required("multi_person", default=current["multi_person"]): bool,
+                vol.Required("tou", default=current["tou"]): bool,
+            }),
+            errors=errors,
+            description_placeholders={"account": number},
+        )
+
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -539,6 +626,10 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
         billing_update_time = self._entry.data[CONF_SETTINGS].get(
             CONF_BILLING_UPDATE_TIME, DEFAULT_BILLING_UPDATE_TIME
         )
+        history_start = self._entry.data[CONF_SETTINGS].get(
+            CONF_HISTORY_START_MONTH, ""
+        )
+        energy_enabled = self._entry.data[CONF_SETTINGS].get(CONF_ENERGY_STATISTICS_ENABLED, DEFAULT_ENERGY_STATISTICS_ENABLED)
         schema = vol.Schema(
             {
                 vol.Required(CONF_UPDATE_INTERVAL, default=update_interval): vol.All(
@@ -548,16 +639,35 @@ class CSGOptionsFlowHandler(config_entries.OptionsFlow):
                     CONF_BILLING_UPDATE_TIME,
                     default=billing_update_time,
                 ): selector.TimeSelector(),
+                vol.Optional(
+                    CONF_HISTORY_START_MONTH,
+                    default="",
+                    description={"suggested_value": history_start},
+                ): str,
+                vol.Required(CONF_ENERGY_STATISTICS_ENABLED, default=energy_enabled): bool,
             }
         )
         if user_input is None:
             return self.async_show_form(step_id=STEP_SETTINGS, data_schema=schema)
+
+        history_start = user_input.get(CONF_HISTORY_START_MONTH, "")
+        if history_start != "":
+            try:
+                history_start = month_key(parse_history_start_month(history_start))
+            except ValueError:
+                return self.async_show_form(
+                    step_id=STEP_SETTINGS,
+                    data_schema=schema,
+                    errors={CONF_HISTORY_START_MONTH: "invalid_history_start_month"},
+                )
 
         new_data = {
             **self._entry.data,
             CONF_SETTINGS: {
                 **self._entry.data[CONF_SETTINGS],
                 CONF_UPDATE_INTERVAL: user_input[CONF_UPDATE_INTERVAL],
+                CONF_HISTORY_START_MONTH: history_start,
+                CONF_ENERGY_STATISTICS_ENABLED: user_input.get(CONF_ENERGY_STATISTICS_ENABLED, energy_enabled),
                 CONF_BILLING_UPDATE_TIME: (
                     user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time).isoformat()
                     if hasattr(user_input.get(CONF_BILLING_UPDATE_TIME, billing_update_time), "isoformat")

@@ -1,9 +1,9 @@
 [project]
-name = "ha-csg"
-version = "2.0.0"
-requires-python = ">=3.12"
+name = "ha-csg-plus"
+version = "3.0.0-beta.1"
+requires-python = ">=3.14.2,<3.15"
 dependencies = [
-  "homeassistant>=2024.4",
+  "homeassistant==2026.9.3",
   "pycryptodome",
   "brotli",
 ]

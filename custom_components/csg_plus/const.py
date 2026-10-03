@@ -1,10 +1,10 @@
-"""Constants for the China Southern Power Grid Statistics integration."""
+"""Constants for the CSG Statistics Plus integration."""
 
 from datetime import timedelta
 
 from .csg_client import LoginType
 
-DOMAIN = "csg"
+DOMAIN = "csg_plus"
 
 # config flow
 # main account (phone number)
@@ -15,6 +15,9 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_ELE_ACCOUNTS = "accounts"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_BILLING_UPDATE_TIME = "billing_update_time"
+CONF_HISTORY_START_MONTH = "history_start_month"
+CONF_ENERGY_STATISTICS_ENABLED = "energy_statistics_enabled"
+CONF_TARIFF_PROFILES = "tariff_profiles"
 CONF_SETTINGS = "settings"
 CONF_UPDATED_AT = "updated_at"
 CONF_ACTION = "action"
@@ -33,6 +36,8 @@ STEP_VALIDATE_QR_LOGIN = "validate_qr_login"
 STEP_INIT = "init"
 STEP_SETTINGS = "settings"
 STEP_ADD_ACCOUNT = "add_account"
+STEP_TARIFF_ACCOUNT = "tariff_account"
+STEP_TARIFF_PROFILE = "tariff_profile"
 
 ABORT_NO_ACCOUNT = "no_account"
 ABORT_ALL_ADDED = "all_added"
@@ -56,8 +61,6 @@ LOGIN_TYPE_TO_QR_APP_NAME = {
 # sensor updates
 SUFFIX_BAL = "balance"
 SUFFIX_ARR = "arrears"
-SUFFIX_ENERGY_TOTAL = "energy_total"
-SUFFIX_SETTLED_COST_TOTAL = "settled_cost_total"
 SUFFIX_YESTERDAY_KWH = "yesterday_kwh"
 SUFFIX_LATEST_DAY_KWH = "latest_settlement_day_kwh"
 SUFFIX_LATEST_DAY_COST = "latest_settlement_day_cost"
@@ -78,9 +81,6 @@ ATTR_KEY_MONTH_BILLING_DELAY = "month_billing_delay"
 ATTR_KEY_YEAR_BILLING_DELAY = "year_billing_delay"
 ATTR_KEY_CURRENT_LADDER_START_DATE = "current_ladder_start_date"
 
-STORAGE_KEY = f"{DOMAIN}.energy_ledger"
-STORAGE_VERSION = 1
-
 # settings
 
 # currently, this timeout is for each request, user should not need to set it manually
@@ -94,3 +94,4 @@ SETTING_LAST_YEAR_UPDATE_DAY_THRESHOLD = 7
 # defaults
 DEFAULT_UPDATE_INTERVAL = timedelta(hours=4).seconds
 DEFAULT_BILLING_UPDATE_TIME = "12:00:00"
+DEFAULT_ENERGY_STATISTICS_ENABLED = True

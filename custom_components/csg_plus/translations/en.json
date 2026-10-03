@@ -1,0 +1,61 @@
+{
+  "entity": {
+    "sensor": {
+      "yesterday_usage": {"name": "{account} Yesterday usage"},
+      "balance": {"name": "{account} Balance"},
+      "arrears": {"name": "{account} Arrears"},
+      "current_ladder": {"name": "{account} Current ladder"},
+      "current_ladder_remaining": {"name": "{account} Current ladder remaining energy"},
+      "current_ladder_tariff": {"name": "{account} Current tariff"},
+      "latest_settlement_usage": {"name": "{account} Latest settlement day usage"},
+      "latest_settlement_cost": {"name": "{account} Latest settlement day cost"},
+      "this_month_usage": {"name": "{account} This month usage"},
+      "this_month_cost": {"name": "{account} This month cost"},
+      "last_month_usage": {"name": "{account} Last month usage"},
+      "last_month_cost": {"name": "{account} Last month cost"},
+      "this_year_usage": {"name": "{account} This year usage"},
+      "this_year_cost": {"name": "{account} This year cost"},
+      "last_year_usage": {"name": "{account} Last year usage"},
+      "last_year_cost": {"name": "{account} Last year cost"}
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Choose sign-in method",
+        "description": "Choose how to sign in to China Southern Power Grid.",
+        "menu_options": {
+          "sms_login": "SMS verification code",
+          "sms_pwd_login": "Password and SMS verification code",
+          "csg_qr_login": "CSG App QR code",
+          "wx_qr_login": "WeChat QR code",
+          "ali_qr_login": "Alipay QR code"
+        }
+      },
+      "sms_login": {"title": "Sign in to China Southern Power Grid", "description": "Sign in with a mobile number and SMS verification code.", "data": {"username": "Mobile number"}},
+      "sms_pwd_login": {"title": "Sign in to China Southern Power Grid", "description": "Sign in with a mobile number, password, and SMS verification code.", "data": {"username": "Mobile number", "password": "Password"}},
+      "validate_sms_code": {"title": "Enter SMS verification code", "description": "A verification code was sent to {phone_no}.", "data": {"code": "Verification code"}},
+      "qr_login": {"title": "Scan QR code", "description": "Use {app_name} to scan the QR code and sign in. When complete, continue.\n\n![QR code]({image_link})", "data": {"refresh_qr_code": "Refresh QR code"}},
+      "reauth_confirm": {"title": "Reauthenticate", "description": "The sign-in session has expired. Please sign in again."}
+    },
+    "error": {
+      "cannot_connect": "Cannot connect",
+      "invalid_auth": "Invalid authentication",
+      "qr_not_scanned": "Scan the QR code and complete sign-in",
+      "unknown": "Unexpected error: {error_detail}"
+    },
+    "abort": {"reauth_successful": "Reauthentication successful", "already_configured": "This account is already configured", "unique_id_mismatch": "Sign in with the same account as this integration entry."}
+  },
+  "options": {
+    "step": {
+      "init": {"title": "Choose an action", "menu_options": {"add_account": "Add a linked payment account", "settings": "Settings", "tariff_account": "Configure current tariff"}},
+      "add_account": {"title": "Choose a payment account"},
+      "settings": {"title": "Settings", "data_description": {"history_start_month": "Earliest month you allow this integration to fetch historical facts. Leave empty to disable new historical backfill.", "energy_statistics_enabled": "Publish persisted daily usage and official closed-month costs as external statistics. Cost requires HA currency CNY. Enabled by default, including entries with no setting. Turning this off retains existing statistics and stops Recorder access. Pair consumption and cost manually in the Energy dashboard; do not combine old and new consumption sources for the same account."}, "data": {"update_interval": "Update interval (seconds)", "billing_update_time": "Daily billing update time", "history_start_month": "Historical sync start month (YYYY-MM)", "energy_statistics_enabled": "Enable external energy and cost statistics"}},
+      "tariff_account": {"title": "Choose a Guangzhou account", "description": "Only Guangzhou tariff policies are currently supported. Other areas remain unconfigured.", "data": {"account_number": "Payment account"}},
+      "tariff_profile": {"title": "Current tariff for {account}", "description": "Select the billing policy actually registered with CSG. This profile only affects current tariff and ladder displays. Official monthly costs do not depend on it; it never reconstructs historical charges. Combined metering requires both modifiers off. For 7 or more people registered for combined metering, choose combined directly.", "data": {"scheme": "Billing scheme", "multi_person": "Registered multi-person allowance", "tou": "Registered time-of-use billing"}}
+    },
+    "error": {"invalid_history_start_month": "Enter a valid calendar month as YYYY-MM, or leave empty to disable historical backfill.", "invalid_tariff_account": "Choose a supported Guangzhou account.", "invalid_tariff_profile": "Choose a supported combination. Combined and unconfigured schemes require both modifiers off."},
+    "abort": {"no_account": "No payment account is linked to this CSG account", "all_added": "All linked payment accounts are already configured", "no_supported_tariff_accounts": "No Guangzhou account is configured; other areas remain unconfigured."}
+  },
+  "selector": {"tariff_scheme": {"options": {"unconfigured": "Unconfigured", "ladder": "Residential ladder", "combined": "Combined metering"}}}
+}
