@@ -227,7 +227,7 @@ preferences，也不自动清理旧数据。
 
 ## API 实现
 
-[`custom_components/csg_plus/csg_client/__init__.py`](custom_components/csg_plus/csg_client/__init__.py) 实现了南网 App API，也可独立使用。基本示例见 `csg_client_demo.py`。
+[`custom_components/csg_plus/csg_client/__init__.py`](custom_components/csg_plus/csg_client/__init__.py) 实现了南网 App API，也可独立使用。基础登录、账户、余额和逐日电量调用示例见 `csg_client_demo.py`。
 
 ## 致谢
 

@@ -298,7 +298,7 @@ Bridge convergence for both daily usage and official monthly costs.
 
 [`custom_components/csg_plus/csg_client/__init__.py`](custom_components/csg_plus/csg_client/__init__.py)
 implements the CSG App API and can be used independently. See
-`csg_client_demo.py` for a basic example.
+`csg_client_demo.py` for basic login, account, balance, and daily usage examples.
 
 ## Credits
 

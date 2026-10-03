@@ -38,6 +38,20 @@ EXPECTED_SUFFIXES = {
 }
 
 
+def test_client_demo_uses_approved_daily_usage_api_without_retired_calls():
+    source = (ROOT / "csg_client_demo.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = {
+        node.func.attr for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "get_month_daily_usage_detail" in calls
+    assert calls.isdisjoint({
+        "get_month_daily_cost_detail", "get_yesterday_kwh", "api_query_day_electric_charge_by_m_point",
+    })
+    assert "queryDayElectricChargeByMPoint" not in source
+
+
 @pytest.mark.parametrize("forbidden", [
     "EnergyLedger", "ENERGY_TOTAL", "SETTLED_COST_TOTAL",
     "SUFFIX_ENERGY_TOTAL", "SUFFIX_SETTLED_COST_TOTAL",
